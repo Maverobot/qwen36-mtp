@@ -72,15 +72,22 @@ cd qwen36-mtp
 ./scripts/install.sh
 ```
 
-Override knobs via env vars:
+Override knobs via env vars (defaults are tuned for a single RTX 4090 with 24 GB):
 
 ```bash
 PREFIX=$HOME/llm/qwen36 \
 CTX_SIZE=131072 \
 PORT=8081 \
-CUDA_ARCH=86 \                 # 3090 / 3090 Ti
 ./scripts/install.sh
 ```
+
+If you're on a different GPU, override `CUDA_ARCH` to match it:
+
+| GPU | `CUDA_ARCH` |
+| --- | --- |
+| RTX 4090 / 4080 / 4070 (Ada)        | `89`  *(default)* |
+| RTX 3090 / 3090 Ti / 3080 (Ampere)  | `86` |
+| RTX 5090 (Blackwell)                | `120` |
 
 The script creates:
 
