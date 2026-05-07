@@ -197,6 +197,18 @@ Rather than rebuild the GGUF, the wrappers route requests through
    model writes a long internal chain of thought; callers can override by
    sending their own `chat_template_kwargs`).
 
+There is a third subtle bug the proxy also fixes: **HTTP/1.1 framing for the
+SSE stream.** `llama-server` returns `Transfer-Encoding: chunked` for streaming
+responses; a naive proxy that copies the body but strips/forgets that header
+leaves the response with neither `Content-Length` nor `Transfer-Encoding` —
+which under HTTP/1.1 means "read until socket close". `curl` happens to be
+lenient and just stops at `data: [DONE]`, but opencode's fetch reader follows
+the spec and waits forever for the close that never comes (the connection is
+keep-alive). The proxy therefore re-emits its own `Transfer-Encoding: chunked`
++ `Connection: close` and chunk-encodes each upstream read as
+`<hex-size>\r\n<data>\r\n`, terminated by `0\r\n\r\n`. Without this opencode
+hangs even though the server log shows a clean `200 OK`.
+
 Run them with no setup once the server is up:
 
 ```bash
@@ -204,12 +216,22 @@ omp-qwen36-27b -p "Reply with one word: pong"
 opencode-qwen36-27b run "Reply with one word: pong"
 ```
 
-The omp wrapper also writes `~/.omp/agent/models.yml` with `api: openai-completions`,
-`auth: none`, `discovery.type: llama.cpp` (omp's discovered llama.cpp provider
-hard-codes `api: openai-responses` which doesn't match `/chat/completions`), and
-busts omp's sqlite `model_cache` if a stale `baseUrl` was cached. The opencode
-wrapper uses `OPENCODE_CONFIG_DIR=~/.config/qwen36-mtp/opencode` so it does not
-touch your normal `~/.config/opencode/opencode.json`.
+The wrappers each spawn the proxy on demand on a per-harness port (omp → 8091,
+opencode → 8092) so the two can run simultaneously and you can keep talking to
+the bare server on 8080.
+
+Per-harness quirks the wrappers paper over:
+
+- **omp** auto-discovers `llama.cpp` providers and hard-codes them to
+  `api: openai-responses`, which doesn't match llama.cpp's `/chat/completions`
+  endpoint. The wrapper writes `~/.omp/agent/models.yml` with the correct
+  `api: openai-completions`, `auth: none`, and (if it exists) busts omp's
+  sqlite `model_cache` so a stale `baseUrl` from a previous run can't override
+  the new one.
+- **opencode** persists a lot of state (`~/.local/share/opencode/`,
+  `opencode.db`, snapshots, sessions). The wrapper sets
+  `OPENCODE_CONFIG_DIR=~/.config/qwen36-mtp/opencode` so it does not touch
+  your normal `~/.config/opencode/opencode.json` or merge with global plugins.
 
 ## Laptop profile (RTX 5070 Ti, 12 GB)
 
@@ -230,6 +252,98 @@ from `mradermacher/Qwen3.6-35B-A3B-i1-GGUF` (`i1-Q4_K_S`, ~20 GiB):
 Realistic numbers on a 5070 Ti laptop with DDR5-5600+ RAM: ~25–45 tok/s decode
 (RAM-bandwidth-bound because of the MoE-on-CPU split), 250–400 tok/s prefill.
 Needs ≥ 32 GiB system RAM (48 GiB+ comfortable for 128 K ctx).
+
+### Why MoE-on-CPU is the right answer at 12 GB
+
+Qwen3.6-35B-A3B is a sparse mixture-of-experts: 35 B total parameters, but only
+**3 B active per token** (a router picks 8 of 256 experts per layer). Naive
+quantized weight footprint at i1-Q4_K_S is ~20 GiB; ~17 GiB of that is expert
+tensors that are touched sparsely, and ~3 GiB is the always-active stuff
+(attention, embeddings, router, output head).
+
+Trying to fit everything on a 12 GB card means heavy quantization (IQ2/IQ3)
+that visibly hurts coding quality. The much better trade-off:
+
+| Tensor class | Size | Where | Why |
+|---|---:|---|---|
+| Attention + router + embeddings | ~3 GiB | GPU | Touched every token; latency-sensitive |
+| 128 K KV cache (Q8_0) | 2–3 GiB | GPU | Touched every step; latency-sensitive |
+| MoE experts (256 × 40 layers) | ~17 GiB | CPU RAM | Only 3 B params active per token; RAM-bandwidth bound |
+
+The 3 B active params per token is small enough that DDR5 main-memory bandwidth
+can deliver them in time, and the GPU only does the dense parts. Net effect:
+you get 35B-quality output at ~30 tok/s on a laptop GPU you couldn't otherwise
+fit even a 27B-Q4 model into.
+
+### Walkthrough
+
+**1. Install once on the laptop:**
+
+```bash
+git clone https://github.com/Maverobot/qwen36-mtp ~/Dev/qwen36-mtp
+cd ~/Dev/qwen36-mtp
+bash scripts/install-laptop.sh
+```
+
+This installs miniconda's CUDA 12.8.1 toolkit into a dedicated env, builds
+llama.cpp with `CUDA_ARCH=120`, downloads the GGUF (~20 GiB) via `hf` +
+`hf_transfer`, and writes `~/.config/qwen36-mtp/laptop.env` with `LLAMA_BIN`
+and `MODEL_PATH` filled in.
+
+**2. Run the server:**
+
+```bash
+set -a; source ~/.config/qwen36-mtp/laptop.env; set +a
+~/Dev/qwen36-mtp/scripts/run-laptop.sh
+```
+
+Listens on `127.0.0.1:8080`, OpenAI-compatible at `/v1/chat/completions`. Test:
+
+```bash
+curl -s http://127.0.0.1:8080/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"qwen3.6-35b-a3b","messages":[{"role":"user","content":"pong?"}]}'
+```
+
+**3. Common overrides** (set the env var before running):
+
+| Var | Default | When to change |
+|---|---|---|
+| `CTX_SIZE` | `131072` | Drop to `65536` if you OOM on KV; bump to `262144` only with ≥ 64 GiB RAM |
+| `N_CPU_MOE` | `40` | **Lower** (e.g. 36, 32) if you have spare VRAM — moves more experts onto GPU = faster decode |
+| `PORT` | `8080` | If 8080 is busy |
+| `SLOT_CACHE_DIR` | unset | Set to e.g. `~/.cache/qwen36-laptop/slots` to persist KV across restarts |
+| `PARALLEL` | `1` | Bump to 2+ for concurrent agent slots (costs VRAM) |
+
+Tuning loop: watch `nvidia-smi` while serving — if VRAM stays well below 11 GiB
+during steady-state decode you're leaving performance on the table; lower
+`N_CPU_MOE` by 4 and rerun until you're at ~10.5 GiB.
+
+**4. Optional — run as a systemd user service:**
+
+```bash
+mkdir -p ~/.config/systemd/user
+cat > ~/.config/systemd/user/qwen36-laptop.service <<'EOF'
+[Unit]
+Description=Qwen3.6-35B-A3B (laptop)
+After=network.target
+
+[Service]
+EnvironmentFile=%h/.config/qwen36-mtp/laptop.env
+ExecStart=%h/Dev/qwen36-mtp/scripts/run-laptop.sh
+Restart=on-failure
+
+[Install]
+WantedBy=default.target
+EOF
+systemctl --user daemon-reload
+systemctl --user enable --now qwen36-laptop
+journalctl --user -fu qwen36-laptop
+```
+
+The omp/opencode wrappers above work unchanged against the laptop server —
+just start the laptop server on `:8080` and the wrappers' built-in proxies
+will spawn on `:8091`/`:8092` as usual.
 
 ## Thinking mode
 
