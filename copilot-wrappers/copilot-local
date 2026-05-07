@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# Generic Copilot CLI launcher for any OpenAI-compatible local/remote provider.
+# Per-provider wrappers (e.g. copilot-minimax, copilot-qwen36-27b) set the
+# QWEN_* vars below and exec this script.
+#
+# Required env vars:
+#   COPILOT_LOCAL_BASE_URL          OpenAI-compatible base URL (e.g. http://host:port/v1)
+#   COPILOT_LOCAL_MODEL             Model name as advertised by /v1/models
+# Optional:
+#   COPILOT_LOCAL_API_KEY           API key, default "1234"
+#   COPILOT_LOCAL_MAX_PROMPT_TOKENS Default 32000
+#   COPILOT_LOCAL_MAX_OUTPUT_TOKENS Default 8192
+
+set -e
+
+: "${COPILOT_LOCAL_BASE_URL:?COPILOT_LOCAL_BASE_URL is required}"
+: "${COPILOT_LOCAL_MODEL:?COPILOT_LOCAL_MODEL is required}"
+
+export COPILOT_PROVIDER_BASE_URL="$COPILOT_LOCAL_BASE_URL"
+export COPILOT_MODEL="$COPILOT_LOCAL_MODEL"
+export COPILOT_PROVIDER_API_KEY="${COPILOT_LOCAL_API_KEY:-1234}"
+export COPILOT_PROVIDER_MAX_PROMPT_TOKENS="${COPILOT_LOCAL_MAX_PROMPT_TOKENS:-32000}"
+export COPILOT_PROVIDER_MAX_OUTPUT_TOKENS="${COPILOT_LOCAL_MAX_OUTPUT_TOKENS:-8192}"
+
+exec copilot "$@"

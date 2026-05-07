@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# Local Qwen3.6-27B served by llama.cpp on this host (see ~/Dev/qwen36/run-qwen36.sh).
+export COPILOT_LOCAL_BASE_URL=http://127.0.0.1:8080/v1
+export COPILOT_LOCAL_MODEL=qwen3.6-27b
+export COPILOT_LOCAL_API_KEY=sk-local
+export COPILOT_LOCAL_MAX_PROMPT_TOKENS=180000
+export COPILOT_LOCAL_MAX_OUTPUT_TOKENS=16384
+exec "$(dirname "$(readlink -f "$0")")/copilot-local" "$@"
