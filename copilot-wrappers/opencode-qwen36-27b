@@ -1,0 +1,55 @@
+#!/usr/bin/env bash
+# Run opencode against the local Qwen3.6-27B llama-server on :8080.
+#
+# - Uses an isolated OPENCODE_CONFIG_DIR so this wrapper does NOT touch the
+#   user's normal ~/.config/opencode/opencode.json (which may already
+#   configure Anthropic etc).
+# - Routes through the system-message-merging proxy (merge-sys-proxy.py)
+#   because the Qwen3 chat template embedded in the GGUF rejects any system
+#   message that isn't the first one, while opencode/most agents emit several.
+set -e
+
+OC_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/qwen36-mtp/opencode"
+CONFIG_FILE="$OC_DIR/opencode.json"
+
+UPSTREAM="${LLAMA_CPP_BASE_URL:-http://127.0.0.1:8080}"
+PROXY_PORT="${OPENCODE_PROXY_PORT:-8092}"
+PROXY_BIN="$(dirname "$(dirname "$(readlink -f "$0")")")/scripts/merge-sys-proxy.py"
+BASE_URL="http://127.0.0.1:$PROXY_PORT/v1"
+
+mkdir -p "$OC_DIR"
+cat > "$CONFIG_FILE" <<EOF
+{
+  "\$schema": "https://opencode.ai/config.json",
+  "model": "qwen36-local/qwen3.6-27b",
+  "provider": {
+    "qwen36-local": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "Qwen3.6-27B (local llama.cpp)",
+      "options": {
+        "baseURL": "$BASE_URL",
+        "apiKey": "sk-local"
+      },
+      "models": {
+        "qwen3.6-27b": {
+          "name": "Qwen3.6-27B-MTP"
+        }
+      }
+    }
+  }
+}
+EOF
+
+# Start the merging proxy if it isn't already listening on the desired port.
+if ! ss -tln 2>/dev/null | grep -q ":$PROXY_PORT "; then
+  python3 "$PROXY_BIN" "$PROXY_PORT" "$UPSTREAM" >/dev/null 2>&1 &
+  PROXY_PID=$!
+  trap 'kill $PROXY_PID 2>/dev/null || true' EXIT INT TERM
+  for _ in 1 2 3 4 5; do
+    if curl -s -o /dev/null -m 1 "$BASE_URL/models"; then break; fi
+    sleep 0.2
+  done
+fi
+
+export OPENCODE_CONFIG_DIR="$OC_DIR"
+exec opencode "$@"

@@ -173,6 +173,64 @@ copilot-qwen36-27b
 To wrap another OpenAI-compatible provider, copy `copilot-qwen36-27b` and change
 the four env vars at the top.
 
+## Use with omp / opencode
+
+`copilot-wrappers/` also ships wrappers for two other agentic-coding harnesses:
+
+- `omp-qwen36-27b` — for [`@oh-my-pi/pi-coding-agent`](https://www.npmjs.com/package/@oh-my-pi/pi-coding-agent).
+- `opencode-qwen36-27b` — for [`opencode`](https://opencode.ai/).
+
+Both harnesses send **multiple `system` messages** per request (a coding system
+prompt + an environment block), but the Qwen3.6 chat template embedded in the
+GGUF rejects any system message after index 0:
+
+```
+Jinja Exception: System message must be at the beginning.
+```
+
+Rather than rebuild the GGUF, the wrappers route requests through
+`scripts/merge-sys-proxy.py` — a tiny ~120-line streaming HTTP proxy that:
+
+1. Merges all `role=system` messages into a single first system block.
+2. Injects `chat_template_kwargs.enable_thinking=false` by default (most coding
+   harnesses don't render `reasoning_content`, so they appear to hang while the
+   model writes a long internal chain of thought; callers can override by
+   sending their own `chat_template_kwargs`).
+
+Run them with no setup once the server is up:
+
+```bash
+omp-qwen36-27b -p "Reply with one word: pong"
+opencode-qwen36-27b run "Reply with one word: pong"
+```
+
+The omp wrapper also writes `~/.omp/agent/models.yml` with `api: openai-completions`,
+`auth: none`, `discovery.type: llama.cpp` (omp's discovered llama.cpp provider
+hard-codes `api: openai-responses` which doesn't match `/chat/completions`), and
+busts omp's sqlite `model_cache` if a stale `baseUrl` was cached. The opencode
+wrapper uses `OPENCODE_CONFIG_DIR=~/.config/qwen36-mtp/opencode` so it does not
+touch your normal `~/.config/opencode/opencode.json`.
+
+## Laptop profile (RTX 5070 Ti, 12 GB)
+
+For a Blackwell laptop GPU with 12 GB VRAM, `scripts/install-laptop.sh` +
+`scripts/run-laptop.sh` set up **Qwen3.6-35B-A3B** (40 layers, MoE, 3B active)
+from `mradermacher/Qwen3.6-35B-A3B-i1-GGUF` (`i1-Q4_K_S`, ~20 GiB):
+
+- builds llama.cpp with `CUDA_ARCH=120` (Blackwell sm_120) against
+  conda's `cuda-12.8.1` toolkit (12.4 doesn't ship sm_120 PTX),
+- runs upstream master rather than the `crucible-mtp` fork (Qwen3.6-35B-A3B has
+  no MTP head; we want upstream's `--n-cpu-moe` flag instead),
+- `--n-cpu-moe 40` keeps every layer's MoE expert tensors on CPU (the experts
+  are ~17 GiB and won't fit in 12 GiB VRAM); attention/router/embeddings stay
+  on the GPU,
+- 128 K context, `-fa on`, `-ctk q8_0 -ctv q8_0` (Q8_0 KV is near-lossless and
+  halves the KV size vs fp16), `--cache-reuse 256`, slot save/restore.
+
+Realistic numbers on a 5070 Ti laptop with DDR5-5600+ RAM: ~25–45 tok/s decode
+(RAM-bandwidth-bound because of the MoE-on-CPU split), 250–400 tok/s prefill.
+Needs ≥ 32 GiB system RAM (48 GiB+ comfortable for 128 K ctx).
+
 ## Thinking mode
 
 Qwen3.6 thinks by default. The launcher sets `--reasoning-format deepseek`, so

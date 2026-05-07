@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+# Run oh-my-pi (omp) against the local Qwen3.6-27B llama-server on :8080.
+#
+# Two issues to work around:
+#   1. omp's discoverable llama.cpp provider hard-codes api=openai-responses,
+#      which doesn't match the OpenAI-compatible chat path llama-server exposes.
+#      We override to api=openai-completions via models.yml on first run.
+#   2. omp emits multiple `system` messages (a default coding prompt followed
+#      by an environment block), but the Qwen3 chat template embedded in the
+#      GGUF refuses any system message that isn't the first one. We launch a
+#      tiny local proxy that merges all system messages before forwarding to
+#      llama-server, and point omp at the proxy.
+set -e
+
+UPSTREAM="${LLAMA_CPP_BASE_URL:-http://127.0.0.1:8080}"
+PROXY_PORT="${OMP_PROXY_PORT:-8091}"
+PROXY_BIN="$(dirname "$(dirname "$(readlink -f "$0")")")/scripts/merge-sys-proxy.py"
+
+CONFIG_DIR="$HOME/.omp/agent"
+CONFIG_FILE="$CONFIG_DIR/models.yml"
+
+# Force-write the config every run so changes propagate even if the file exists.
+mkdir -p "$CONFIG_DIR"
+cat > "$CONFIG_FILE" <<EOF
+providers:
+  llama.cpp:
+    baseUrl: http://127.0.0.1:$PROXY_PORT
+    api: openai-completions
+    auth: none
+    discovery:
+      type: llama.cpp
+EOF
+
+# Bust the model cache only when the config changes (so api/baseUrl edits propagate).
+if command -v sqlite3 >/dev/null 2>&1 && [ -f "$CONFIG_DIR/models.db" ]; then
+  CACHED_BASE=$(sqlite3 "$CONFIG_DIR/models.db" \
+    "SELECT models FROM model_cache WHERE provider_id='llama.cpp';" 2>/dev/null \
+    | grep -o "\"baseUrl\":\"[^\"]*\"" | head -1)
+  EXPECTED="\"baseUrl\":\"http://127.0.0.1:$PROXY_PORT\""
+  if [ -n "$CACHED_BASE" ] && [ "$CACHED_BASE" != "$EXPECTED" ]; then
+    sqlite3 "$CONFIG_DIR/models.db" "DELETE FROM model_cache WHERE provider_id='llama.cpp';" 2>/dev/null || true
+  fi
+fi
+
+# Start the merging proxy in the background and ensure it dies with us.
+python3 "$PROXY_BIN" "$PROXY_PORT" "$UPSTREAM" >/dev/null 2>&1 &
+PROXY_PID=$!
+trap 'kill $PROXY_PID 2>/dev/null || true' EXIT INT TERM
+
+# Wait briefly for the proxy to come up.
+for _ in 1 2 3 4 5 10; do
+  if curl -s -o /dev/null -m 1 "http://127.0.0.1:$PROXY_PORT/v1/models"; then break; fi
+  sleep 0.2
+done
+
+export LLAMA_CPP_BASE_URL="http://127.0.0.1:$PROXY_PORT"
+exec omp --model 'llama.cpp/qwen3.6-27b' "$@"
