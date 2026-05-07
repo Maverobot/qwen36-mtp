@@ -31,6 +31,17 @@ command.
 
 (HF model card reports 100.3 tok/s short-ctx on a 3090 Ti with the same recipe.)
 
+### Prefill-cache TTFT (RTX 4090, 196 608 ctx, 3 628-token prompt)
+
+| call | wall | `prompt_n` re-prefilled | `cache_n` reused via KV-shift |
+| --- | ---: | ---: | ---: |
+| cold | **3.11 s** | 3628 | 0 |
+| warm (same preamble, different tail) | **0.42 s** | 515 | 3112 |
+| warm again | **0.38 s** | 514 | 3112 |
+
+~7.5× faster TTFT on subsequent calls thanks to `--cache-reuse 256`,
+`--cache-idle-slots`, and the patched fork's KV-slot persistence.
+
 ## Install
 
 Prereqs: NVIDIA driver (CUDA 12-capable), `git`, `cmake`, `conda` (Miniconda or

@@ -175,6 +175,8 @@ exec "$LLAMA_DIR/build/bin/llama-server" \\
   --parallel 1 --kv-unified \\
   --ctx-checkpoints 8 --checkpoint-every-n-tokens 2048 \\
   --cache-ram -1 --cache-idle-slots \\
+  --cache-reuse 256 \\
+  --slot-save-path "$PREFIX/slot-cache" \\
   --reasoning-format deepseek \\
   --metrics --jinja \\
   --host 0.0.0.0 --port $PORT \\
