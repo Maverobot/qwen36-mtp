@@ -199,6 +199,28 @@ WantedBy=default.target
 EOF
 log "Wrote systemd user unit: $SVC"
 
+# ---------- 7b. companion multi-slot (no-MTP) systemd unit -----------------
+LAUNCH_MULTI="$REPO_DIR/scripts/run-multi.sh"
+SVC_MULTI="$HOME/.config/systemd/user/qwen36-multi.service"
+cat > "$SVC_MULTI" <<EOF
+[Unit]
+Description=Qwen3.6-27B llama-server (multi-slot, no MTP) on :8081
+After=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=$CONF
+Environment=CUDA_VISIBLE_DEVICES=0
+Environment=GGML_CUDA_ENABLE_UNIFIED_MEMORY=0
+ExecStart=$LAUNCH_MULTI
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
+EOF
+log "Wrote systemd user unit: $SVC_MULTI"
+
 # ---------- 8. summary ------------------------------------------------------
 cat <<EOF
 

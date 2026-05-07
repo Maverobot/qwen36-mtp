@@ -135,6 +135,28 @@ curl -s http://localhost:8080/v1/chat/completions -H 'Content-Type: application/
   -d '{"model":"qwen3.6-27b","messages":[{"role":"user","content":"reply: pong"}]}'
 ```
 
+### Two profiles
+
+The repo ships two launchers and matching systemd units:
+
+| Profile        | Launcher              | Unit                  | Port | MTP | Slots | When to use                                      |
+|----------------|-----------------------|-----------------------|-----:|:---:|:----:|--------------------------------------------------|
+| **MTP single** | `scripts/run.sh`      | `qwen36.service`      | 8080 |  ✓  |  1   | Single-stream coding; max tok/s (~100+)          |
+| **multi**      | `scripts/run-multi.sh`| `qwen36-multi.service`| 8081 |  ✗  |  4   | Concurrent agents/subagents (e.g. Copilot CLI)   |
+
+```bash
+systemctl --user start qwen36         # MTP profile on :8080
+systemctl --user start qwen36-multi   # multi profile on :8081
+```
+
+Measured single-stream tok/s on RTX 4090:
+- MTP profile (`:8080`): ~83–106 tok/s
+- multi profile (`:8081`): ~37 tok/s/stream × 4 streams = ~150 tok/s aggregate
+
+You can run them simultaneously (different ports, different VRAM pools) only
+if you have headroom. With 196 608 ctx each they will not co-exist on a 24 GB
+card; pick one at a time.
+
 ## Use with the GitHub Copilot CLI
 
 The `copilot-wrappers/` folder ships two scripts:
