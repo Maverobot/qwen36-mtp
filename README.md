@@ -178,6 +178,13 @@ modest.
   multi-tool / strict-schema workloads, put **LiteLLM** in front of it.
 - This recipe is dense-27B-specific. A 35B variant would need its own GGUF and
   possibly a different `CTX_SIZE`.
+- **MTP and multi-slot are mutually exclusive** in the `crucible-mtp` fork. The
+  server refuses to start with `--spec-type mtp` and `--parallel >1`
+  (`MTP currently supports only n_parallel=1`). `scripts/run.sh` handles this
+  automatically: if you set `PARALLEL=2+` (or `DISABLE_MTP=1`) in the env file,
+  it drops `--spec-type mtp` and enables `--parallel N --kv-unified
+  --slot-prompt-similarity $SPS` for concurrent clients (e.g. Copilot CLI
+  subagents) at the cost of ~30–50% lower single-stream tok/s.
 
 ## Credits
 
