@@ -42,6 +42,24 @@ command.
 ~7.5× faster TTFT on subsequent calls thanks to `--cache-reuse 256`,
 `--cache-idle-slots`, and the patched fork's KV-slot persistence.
 
+### Tuning `--cache-reuse` (RTX 4090)
+
+Swept 64 / 128 / 256 / 512 on this stack. **Differences are within noise** for
+both pure prefix-match prompts (warm TTFT 0.43-0.45 s across all values) and
+prompts with a varying middle (mid-prompt KV-shift fires roughly the same way).
+The default of `256` is fine. If your workload has many small differing
+fragments and you want to squeeze a few percent more reuse, try 64; otherwise
+don't bother.
+
+The bigger wins were already on by default in this repo:
+
+| flag | effect |
+| --- | --- |
+| `--cache-idle-slots` | keep slot KV warm across requests within a server lifetime |
+| `--slot-save-path` (+ patched fork) | auto-save/restore slot KV to disk; survives `systemctl restart qwen36` |
+| `--ctx-checkpoints 8 --checkpoint-every-n-tokens 2048` | mid-prefill snapshots so partial cancels don't waste work |
+| `--cache-ram -1 --kv-unified` | unlimited RAM-side overflow + the unified-KV mode required by the above |
+
 ## Install
 
 Prereqs: NVIDIA driver (CUDA 12-capable), `git`, `cmake`, `conda` (Miniconda or
@@ -68,17 +86,39 @@ The script creates:
 
 - `$PREFIX/llama.cpp/build/bin/llama-server` — patched binary
 - `$PREFIX/models/qwen36-27b-mtp/Qwen3.6-27B-MTP-IQ4_XS.gguf` — ~14 GiB
-- `$PREFIX/run-qwen36.sh` — launcher (edit this for tuning)
-- `~/.config/systemd/user/qwen36.service` — optional auto-start unit
+- `$PREFIX/slot-cache/` — on-disk slot KV cache (auto-save/restore across restarts)
+- `~/.config/qwen36-mtp/env` — runtime config (paths, ctx size, port, …)
+- `~/.config/systemd/user/qwen36.service` — auto-start unit; ExecStart points
+  at `scripts/run.sh` *in this repo* so `git pull` updates the launcher.
+
+## Architecture: single source of truth
+
+```
+~/.config/systemd/user/qwen36.service
+        │ ExecStart=
+        ▼
+$REPO/scripts/run.sh                  ← versioned, edit here
+        │ reads
+        ▼
+~/.config/qwen36-mtp/env              ← per-host paths/tunables
+        │ pointing at
+        ▼
+llama-server binary + GGUF
+```
+
+Edit the launcher? `git pull` and `systemctl --user restart qwen36`.
+Change ctx size or port? Edit `~/.config/qwen36-mtp/env` and restart.
 
 ## Run
 
 ```bash
-~/Dev/qwen36/run-qwen36.sh
-# or, as a systemd user service:
+~/.config/systemd/user/qwen36.service is installed; just:
 systemctl --user daemon-reload
 systemctl --user enable --now qwen36
 sudo loginctl enable-linger $USER     # keep running across logout
+
+# manual one-shot:
+LLAMA_BIN=...llama-server MODEL_PATH=...gguf ./scripts/run.sh
 ```
 
 Endpoint: `http://localhost:8080/v1` (model alias `qwen3.6-27b`).
