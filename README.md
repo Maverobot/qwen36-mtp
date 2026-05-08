@@ -157,6 +157,101 @@ You can run them simultaneously (different ports, different VRAM pools) only
 if you have headroom. With 196 608 ctx each they will not co-exist on a 24 GB
 card; pick one at a time.
 
+#### Which profile should I pick?
+
+The right answer depends on **how often two of your requests overlap in time**,
+not on how many CLI windows you have open. Per-slot decode in the multi profile
+drops with concurrency because all slots share the same KV bandwidth and
+compute, while MTP's ~3× single-stream speedup from NextN draft acceptance is
+unavailable in the multi profile (the patch hard-disables `--spec-type mtp`
+under `--parallel >1`; see "MTP × multi-slot is mutually exclusive" below).
+
+| Concurrent in-flight requests | Best profile | Why |
+|---|---|---|
+| **1** (one CLI, one prompt at a time) | MTP `:8080` | ~100 tok/s beats ~70 — MTP single-stream is unbeatable. |
+| **2** (e.g. Copilot CLI main + a subagent dispatch, or omp + opencode side-by-side) | **multi N=2** | MTP queues request #2 → effective ~50 tok/s each. Multi at N=2 gives ~60 tok/s each, in parallel. |
+| **3-4** (planner + executors, fan-out subagents, you + CI) | **multi N=4** | MTP serializes everything (caps at 106 tok/s aggregate). Multi N=4 hits ~150 aggregate. |
+| **>4** | none — KV bandwidth saturates; per-slot drops below ~25 tok/s. Queue at the orchestrator instead. |
+
+Rule of thumb:
+
+- **Solo coding, one CLI window, no subagents** → MTP. (~3× faster perceived
+  latency for the one stream that matters.)
+- **Subagent-driven harnesses** (Copilot CLI agent fan-out, opencode
+  planner+executor, autoresearch loops, anything that calls the model from
+  background tasks while you're still typing) → **multi N=4**. Wall-clock for
+  the user-visible task is `max(slot_times)`, not `sum(slot_times)`, so even
+  with the per-slot penalty 3 parallel streams finish faster than 3 serialized
+  ones.
+- **Two harnesses at once** (omp + opencode) → multi N=2 is the sweet spot:
+  minimal per-slot penalty, no queueing.
+
+Empirical switch criterion: run `journalctl --user -u qwen36 -f` during ~30
+minutes of your real usage. If you see request-queueing patterns
+(`update_slots: ... waiting` or `all slots are idle (n=1, depth=2+)`) you're
+losing wall-clock to MTP serialization → switch. If slot 0 is mostly idle
+between bursts, stay on MTP.
+
+#### MTP × multi-slot is mutually exclusive (why)
+
+In the `crucible-mtp` fork, MTP and `--parallel >1` cannot be combined. This
+isn't a config choice — it's a scope limitation in the original MTP patch
+(`10829dbcc llama + spec: MTP support`). Three concrete reasons in the source:
+
+1. **Cross-ubatch hidden-state pairing is a single buffer.**
+   `src/llama-mtp.h` defines:
+
+   ```cpp
+   struct llama_mtp {
+       std::vector<float> pending_h;     // last h-row of previous ubatch
+       llama_pos          pending_pos = -1;
+   };
+   ```
+
+   The MTP draft head consumes `(h_p, x_{p+1})` pairs — the target's hidden
+   state at position `p` paired with the *next* token. The last h-row of one
+   ubatch needs the first token of the next ubatch to pair with, so it's
+   stashed in `pending_h`. That's a single vector, one position. Two parallel
+   slots would clobber each other's pending row.
+
+2. **The MTP draft state hardcodes `seq_id=0` and `n_seq_max=1`.**
+   `common/speculative.cpp:631-636` — verbatim:
+
+   ```cpp
+   // TODO: multiple seq support
+   batch = llama_batch_init(/*n_tokens=*/ 1, /*embd=*/ n_embd, /*n_seq_max=*/ 1);
+   ...
+   batch.seq_id[0][0] = 0;
+   ```
+
+   Every `llama_memory_seq_*` call against the MTP context (lines 659, 681,
+   695, 753) passes `seq_id=0`. The MTP KV literally has no per-slot dimension.
+
+3. **The hard guard then refuses to start.**
+   `tools/server/server-context.cpp:964-967`:
+
+   ```cpp
+   if (params_base.n_parallel > 1) {
+       SRV_ERR("MTP currently supports only n_parallel=1; got %d\n",
+               params_base.n_parallel);
+       return false;
+   }
+   ```
+
+The same root cause is also why the patch auto-disables `--cache-reuse` and
+`--ctx-shift` whenever MTP is active (server-context.cpp:977-984): both
+features rearrange the target KV (drop a middle range, copy a prefix from
+another slot, slide tokens), invalidating the `(h_p, x_{p+1})` invariant the
+streaming hook relies on. Rather than detect every cache mutation and
+selectively reset `pending_h`, the patch just turns those features off.
+
+Lifting the n_parallel limit upstream would mean: per-seq-id `pending_h` /
+`pending_pos` vectors, threading `seq_id` through `common_speculative_state_mtp`,
+either spawning N MTP contexts (memory-heavy) or partitioning the single MTP
+ctx's KV (`n_seq_max = N`), and re-enabling `cache_reuse` / `ctx_shift` with
+proper invalidation hooks. That's real design work — hence the explicit
+`// TODO` and the auto-disabled adjacent features.
+
 ## Use with the GitHub Copilot CLI
 
 The `copilot-wrappers/` folder ships two scripts:
@@ -395,13 +490,12 @@ modest.
   multi-tool / strict-schema workloads, put **LiteLLM** in front of it.
 - This recipe is dense-27B-specific. A 35B variant would need its own GGUF and
   possibly a different `CTX_SIZE`.
-- **MTP and multi-slot are mutually exclusive** in the `crucible-mtp` fork. The
-  server refuses to start with `--spec-type mtp` and `--parallel >1`
-  (`MTP currently supports only n_parallel=1`). `scripts/run.sh` handles this
-  automatically: if you set `PARALLEL=2+` (or `DISABLE_MTP=1`) in the env file,
-  it drops `--spec-type mtp` and enables `--parallel N --kv-unified
-  --slot-prompt-similarity $SPS` for concurrent clients (e.g. Copilot CLI
-  subagents) at the cost of ~30–50% lower single-stream tok/s.
+- **MTP and multi-slot are mutually exclusive** in the `crucible-mtp` fork —
+  the server refuses to start with `--spec-type mtp` and `--parallel >1`. See
+  the "Which profile should I pick?" and "MTP × multi-slot is mutually
+  exclusive (why)" sections under [Two profiles](#two-profiles) for the
+  per-usage-pattern crossover and the source-level reasons. `scripts/run.sh`
+  picks the right flags automatically based on `PARALLEL` / `DISABLE_MTP`.
 
 ## Credits
 
