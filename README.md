@@ -324,9 +324,29 @@ omp-qwen36-27b -p "Reply with one word: pong"
 opencode-qwen36-27b run "Reply with one word: pong"
 ```
 
-The wrappers each spawn the proxy on demand on a per-harness port (omp → 8091,
-opencode → 8092) so the two can run simultaneously and you can keep talking to
-the bare server on 8080.
+Each wrapper spawns its proxy on a **distinct port** so you can run several
+agents concurrently against the same llama-server on `:8080`:
+
+| Wrapper                       | Client       | Proxy port | Upstream |
+| ----------------------------- | ------------ | ---------: | -------- |
+| `copilot-qwen36-27b`          | Copilot CLI  |          — | `:8080` direct (Copilot CLI doesn't trip the multi-`system` bug) |
+| `copilot-qwen36-35b-a3b`      | Copilot CLI  |          — | `:8080` direct |
+| `omp-qwen36-27b`              | omp          |   **8091** | → `:8080` |
+| `opencode-qwen36-27b`         | opencode     |   **8092** | → `:8080` |
+| `omp-qwen36-35b-a3b`          | omp          |   **8093** | → `:8080` |
+| `opencode-qwen36-35b-a3b`     | opencode     |   **8094** | → `:8080` |
+
+So `:8080` is always the model server (one); the `:809x` ports are per-client
+adapter shims (one per harness × model). All the proxies forward to the same
+upstream — you can keep talking to the bare server on `:8080` (e.g. with
+`curl /v1/chat/completions` or the Copilot CLI wrappers) while omp and
+opencode each have their own merging-proxy lane.
+
+> **Tip — context window auto-detection.** The omp wrappers query
+> `$UPSTREAM/props` at launch time and write the running server's actual
+> `n_ctx` (e.g. `196608`) into `models.yml`. So if you change `CTX_SIZE` in
+> `~/.config/qwen36-mtp/env` and restart the server, omp's status-line
+> context indicator follows automatically — no manual edit needed.
 
 Per-harness quirks the wrappers paper over:
 
