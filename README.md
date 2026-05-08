@@ -241,8 +241,14 @@ from `mradermacher/Qwen3.6-35B-A3B-i1-GGUF` (`i1-Q4_K_S`, ~20 GiB):
 
 - builds llama.cpp with `CUDA_ARCH=120` (Blackwell sm_120) against
   conda's `cuda-12.8.1` toolkit (12.4 doesn't ship sm_120 PTX),
-- runs upstream master rather than the `crucible-mtp` fork (Qwen3.6-35B-A3B has
-  no MTP head; we want upstream's `--n-cpu-moe` flag instead),
+- runs upstream master rather than the `crucible-mtp` fork. The Qwen3.6-35B-A3B
+  base model *does* ship an MTP head per Alibaba's model card (vLLM and SGLang
+  both expose `--speculative-config '{"method":"mtp",...}'` for it), but the
+  i1-Q4_K_S GGUF we use (`mradermacher/Qwen3.6-35B-A3B-i1-GGUF`) drops it
+  during conversion — `gguf-py` reports 0 tensors named `mtp*`/`nextn*` out of
+  733 total. Upstream llama.cpp also has no MTP runtime path for the
+  `qwen35moe` arch yet, so the fork would buy us nothing here. We want
+  upstream's `--n-cpu-moe` flag instead,
 - `--n-cpu-moe 40` keeps every layer's MoE expert tensors on CPU (the experts
   are ~17 GiB and won't fit in 12 GiB VRAM); attention/router/embeddings stay
   on the GPU,
