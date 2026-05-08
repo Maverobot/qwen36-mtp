@@ -246,12 +246,29 @@ from `mradermacher/Qwen3.6-35B-A3B-i1-GGUF` (`i1-Q4_K_S`, ~20 GiB):
 - `--n-cpu-moe 40` keeps every layer's MoE expert tensors on CPU (the experts
   are ~17 GiB and won't fit in 12 GiB VRAM); attention/router/embeddings stay
   on the GPU,
-- 128 K context, `-fa on`, `-ctk q8_0 -ctv q8_0` (Q8_0 KV is near-lossless and
-  halves the KV size vs fp16), `--cache-reuse 256`, slot save/restore.
+- **262 144 context** (the model's native max), `-fa on`, `-ctk q8_0 -ctv q8_0`
+  (Q8_0 KV is near-lossless and halves the KV size vs fp16), `--cache-reuse
+  256`, slot save/restore. The KV cache occupies ~2 720 MiB on the GPU at full
+  context, leaving ~6.5 GiB free for compute buffers on a 12 GiB card.
 
-Realistic numbers on a 5070 Ti laptop with DDR5-5600+ RAM: ~25–45 tok/s decode
-(RAM-bandwidth-bound because of the MoE-on-CPU split), 250–400 tok/s prefill.
-Needs ≥ 32 GiB system RAM (48 GiB+ comfortable for 128 K ctx).
+#### Measured numbers (RTX 5070 Ti laptop, Qwen3.6-35B-A3B i1-Q4_K_S)
+
+Server response timings via `llama-server`'s `/completion` endpoint
+(`temperature=0`, `cache_prompt=false` unless noted), wrapped in the omp/opencode
+launchers from `copilot-wrappers/`:
+
+| prompt | decode | prefill (cold) | wall |
+| ---: | ---: | ---: | ---: |
+| ~50 tok | **56 tok/s** | 85 tok/s | 4.6 s for 256 toks |
+| ~8 K  | **58 tok/s** | 1 173 tok/s | 7.9 s incl. prefill |
+| ~32 K | **53 tok/s** | 1 306 tok/s | 24.7 s incl. prefill |
+| ~128 K | **39 tok/s** | 1 027 tok/s | 125 s incl. prefill |
+
+Decode stays well above the 25–45 tok/s estimate up to 32 K context; even at
+128 K it is still usable for one-shot retrieval queries (a 13 K-token prompt
+returns its answer in ~3.1 s end-to-end). Decode is RAM-bandwidth-bound by the
+MoE-on-CPU split, so it scales with DDR5 speed/channels, not GPU clocks. Needs
+≥ 32 GiB system RAM (48 GiB+ comfortable for full context).
 
 ### Why MoE-on-CPU is the right answer at 12 GB
 
@@ -267,7 +284,7 @@ that visibly hurts coding quality. The much better trade-off:
 | Tensor class | Size | Where | Why |
 |---|---:|---|---|
 | Attention + router + embeddings | ~3 GiB | GPU | Touched every token; latency-sensitive |
-| 128 K KV cache (Q8_0) | 2–3 GiB | GPU | Touched every step; latency-sensitive |
+| 262 K KV cache (Q8_0) | ~2.7 GiB | GPU | Touched every step; latency-sensitive |
 | MoE experts (256 × 40 layers) | ~17 GiB | CPU RAM | Only 3 B params active per token; RAM-bandwidth bound |
 
 The 3 B active params per token is small enough that DDR5 main-memory bandwidth
