@@ -1,20 +1,12 @@
 #!/usr/bin/env bash
-# Run oh-my-pi (omp) against the local Qwen3.6-27B llama-server on :8080.
+# Run oh-my-pi (omp) against the local Qwen3.6-35B-A3B llama-server (laptop setup).
 #
-# omp emits multiple `system` messages (a default coding prompt followed
-# by an environment block), but the Qwen3 chat template embedded in the
-# GGUF refuses any system message that isn't the first one. We launch a
-# tiny local proxy (merge-sys-proxy.py) that merges all system messages
-# before forwarding to llama-server, and point omp at the proxy.
-#
-# omp's built-in `llama.cpp` provider discovers the model list via
-# `${baseUrl}/models` and the context window via `${baseUrl}/../props`,
-# both of which our proxy forwards verbatim. The /v1 suffix on baseUrl
-# is required so omp hits llama-server's /v1/models endpoint.
+# See omp-qwen36-27b for the issue worked around here (multi-system-message
+# merging proxy).
 set -e
 
 UPSTREAM="${LLAMA_CPP_BASE_URL:-http://127.0.0.1:8080}"
-PROXY_PORT="${OMP_PROXY_PORT:-8091}"
+PROXY_PORT="${OMP_PROXY_PORT:-8093}"
 PROXY_BIN="$(dirname "$(dirname "$(readlink -f "$0")")")/scripts/merge-sys-proxy.py"
 
 # Pick up CTX_SIZE from the laptop env file so the model's contextWindow
@@ -42,8 +34,8 @@ providers:
     discovery:
       type: llama.cpp
     models:
-      - id: qwen3.6-27b
-        name: Qwen3.6-27B
+      - id: qwen3.6-35b-a3b
+        name: Qwen3.6-35B-A3B
         api: openai-completions
         contextWindow: $CTX_SIZE
         maxTokens: $CTX_SIZE
@@ -60,4 +52,4 @@ if ! ss -tln 2>/dev/null | grep -q ":$PROXY_PORT "; then
   done
 fi
 
-omp --model 'llama.cpp/qwen3.6-27b' "$@"
+omp --model 'llama.cpp/qwen3.6-35b-a3b' "$@"
