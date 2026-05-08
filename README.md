@@ -342,11 +342,14 @@ upstream — you can keep talking to the bare server on `:8080` (e.g. with
 `curl /v1/chat/completions` or the Copilot CLI wrappers) while omp and
 opencode each have their own merging-proxy lane.
 
-> **Tip — context window auto-detection.** The omp wrappers query
-> `$UPSTREAM/props` at launch time and write the running server's actual
-> `n_ctx` (e.g. `196608`) into `models.yml`. So if you change `CTX_SIZE` in
-> `~/.config/qwen36-mtp/env` and restart the server, omp's status-line
-> context indicator follows automatically — no manual edit needed.
+> **Tip — context window auto-detection.** Both omp and opencode wrappers
+> query `$UPSTREAM/props` at launch time and write the running server's
+> actual `n_ctx` (e.g. `196608`) into the harness's config: `models.yml` for
+> omp, the model's `limit.context` field for opencode. So if you change
+> `CTX_SIZE` in `~/.config/qwen36-mtp/env` and restart the server, the
+> harness's status-line context indicator follows automatically — no
+> manual edit needed. The opencode wrappers also set
+> `limit.output` (default 16384, override with `OPENCODE_OUTPUT_LIMIT`).
 
 Per-harness quirks the wrappers paper over:
 
@@ -360,6 +363,9 @@ Per-harness quirks the wrappers paper over:
   `opencode.db`, snapshots, sessions). The wrapper sets
   `OPENCODE_CONFIG_DIR=~/.config/qwen36-mtp/opencode` so it does not touch
   your normal `~/.config/opencode/opencode.json` or merge with global plugins.
+  The `@ai-sdk/openai-compatible` provider opencode uses does not consult
+  llama-server's `n_ctx_train` or `/props.n_ctx`, so the wrapper injects
+  the schema's `limit: { context, output }` block on its behalf.
 
 ## Laptop profile (RTX 5070 Ti, 12 GB)
 

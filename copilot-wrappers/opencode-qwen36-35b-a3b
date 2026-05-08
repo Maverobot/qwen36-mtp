@@ -14,6 +14,22 @@ PROXY_PORT="${OPENCODE_PROXY_PORT:-8094}"
 PROXY_BIN="$(dirname "$(dirname "$(readlink -f "$0")")")/scripts/merge-sys-proxy.py"
 BASE_URL="http://127.0.0.1:$PROXY_PORT/v1"
 
+# Resolve the context window the running llama-server actually allocated by
+# querying its /props endpoint (default_generation_settings.n_ctx). Falls
+# back to $CTX_SIZE from the laptop env file (if present), then to 262144.
+# opencode's @ai-sdk/openai-compatible plugin does not auto-discover this
+# from /v1/models, so we inject it via the schema's `limit` field.
+CTX_SIZE_DEFAULT=262144
+ENV_FILE="$HOME/.config/qwen36-mtp/laptop.env"
+[ -f "$ENV_FILE" ] && . "$ENV_FILE"
+CTX_SIZE="${CTX_SIZE:-$CTX_SIZE_DEFAULT}"
+DETECTED_CTX="$(curl -s -m 2 "$UPSTREAM/props" 2>/dev/null \
+  | python3 -c 'import sys,json; print(json.load(sys.stdin)["default_generation_settings"]["n_ctx"])' 2>/dev/null || true)"
+if [ -n "$DETECTED_CTX" ] && [ "$DETECTED_CTX" -gt 0 ] 2>/dev/null; then
+  CTX_SIZE="$DETECTED_CTX"
+fi
+OUTPUT_LIMIT="${OPENCODE_OUTPUT_LIMIT:-16384}"
+
 mkdir -p "$OC_DIR"
 cat > "$CONFIG_FILE" <<EOF
 {
@@ -29,7 +45,11 @@ cat > "$CONFIG_FILE" <<EOF
       },
       "models": {
         "qwen3.6-35b-a3b": {
-          "name": "Qwen3.6-35B-A3B"
+          "name": "Qwen3.6-35B-A3B",
+          "limit": {
+            "context": $CTX_SIZE,
+            "output": $OUTPUT_LIMIT
+          }
         }
       }
     }
