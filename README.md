@@ -135,27 +135,40 @@ curl -s http://localhost:8080/v1/chat/completions -H 'Content-Type: application/
   -d '{"model":"qwen3.6-27b","messages":[{"role":"user","content":"reply: pong"}]}'
 ```
 
-### Two profiles
+### Two profiles, one port
 
-The repo ships two launchers and matching systemd units:
+The repo ships two launchers and matching systemd unit templates under
+`scripts/systemd/`. **Both bind `:8080`** and are wired with `Conflicts=`, so
+exactly one runs at a time and your tooling (omp, opencode, Copilot CLI) only
+ever needs to point at `http://127.0.0.1:8080/v1`:
 
 | Profile        | Launcher              | Unit                  | Port | MTP | Slots | When to use                                      |
 |----------------|-----------------------|-----------------------|-----:|:---:|:----:|--------------------------------------------------|
 | **MTP single** | `scripts/run.sh`      | `qwen36.service`      | 8080 |  ✓  |  1   | Single-stream coding; max tok/s (~100+)          |
-| **multi**      | `scripts/run-multi.sh`| `qwen36-multi.service`| 8081 |  ✗  |  4   | Concurrent agents/subagents (e.g. Copilot CLI)   |
+| **multi**      | `scripts/run-multi.sh`| `qwen36-multi.service`| 8080 |  ✗  |  4   | Concurrent agents/subagents (e.g. Copilot CLI)   |
+
+Install the unit templates once (idempotent):
 
 ```bash
-systemctl --user start qwen36         # MTP profile on :8080
-systemctl --user start qwen36-multi   # multi profile on :8081
+ln -sf "$PWD/scripts/systemd/qwen36.service"       ~/.config/systemd/user/qwen36.service
+ln -sf "$PWD/scripts/systemd/qwen36-multi.service" ~/.config/systemd/user/qwen36-multi.service
+systemctl --user daemon-reload
 ```
 
-Measured single-stream tok/s on RTX 4090:
-- MTP profile (`:8080`): ~83–106 tok/s
-- multi profile (`:8081`): ~37 tok/s/stream × 4 streams = ~150 tok/s aggregate
+Then swap profiles freely — starting one auto-stops the other:
 
-You can run them simultaneously (different ports, different VRAM pools) only
-if you have headroom. With 196 608 ctx each they will not co-exist on a 24 GB
-card; pick one at a time.
+```bash
+systemctl --user start qwen36         # MTP profile  (auto-stops qwen36-multi)
+systemctl --user start qwen36-multi   # multi profile (auto-stops qwen36)
+```
+
+Measured tok/s on RTX 4090 (Qwen3.6-27B-MTP-IQ4_XS, 196 608 ctx, q4_0 KV):
+- **MTP profile**: ~83–106 tok/s single-stream
+- **multi profile**: ~48 tok/s at N=1 → **44 tok/s/stream at N=2 (88 aggregate)** → **35 tok/s/stream at N=4 (140 aggregate)**
+
+Quantized KV (`-ctk/-ctv q4_0`) and the 192k-ctx unified KV layout cost ~10–15%
+single-stream decode versus a stripped baseline; the trade is long context plus
+N=4 concurrency without VRAM thrash.
 
 #### Which profile should I pick?
 
@@ -169,8 +182,8 @@ under `--parallel >1`; see "MTP × multi-slot is mutually exclusive" below).
 | Concurrent in-flight requests | Best profile | Why |
 |---|---|---|
 | **1** (one CLI, one prompt at a time) | MTP `:8080` | ~100 tok/s beats ~70 — MTP single-stream is unbeatable. |
-| **2** (e.g. Copilot CLI main + a subagent dispatch, or omp + opencode side-by-side) | **multi N=2** | MTP queues request #2 → effective ~50 tok/s each. Multi at N=2 gives ~60 tok/s each, in parallel. |
-| **3-4** (planner + executors, fan-out subagents, you + CI) | **multi N=4** | MTP serializes everything (caps at 106 tok/s aggregate). Multi N=4 hits ~150 aggregate. |
+| **2** (e.g. Copilot CLI main + a subagent dispatch, or omp + opencode side-by-side) | **multi N=2** | MTP queues request #2 → effective ~50 tok/s each. Multi at N=2 gives ~44 tok/s each, in parallel (88 aggregate). |
+| **3-4** (planner + executors, fan-out subagents, you + CI) | **multi N=4** | MTP serializes everything (caps at 106 tok/s aggregate). Multi N=4 hits ~140 aggregate (~35 each). |
 | **>4** | none — KV bandwidth saturates; per-slot drops below ~25 tok/s. Queue at the orchestrator instead. |
 
 Rule of thumb:

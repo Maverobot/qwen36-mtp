@@ -1,0 +1,20 @@
+# Qwen3.6-27B llama-server, multi-slot profile (--parallel 4, no MTP), on :8080.
+# Mutually exclusive with qwen36.service via `Conflicts=` so both can share :8080.
+# See ./qwen36.service for installation instructions.
+
+[Unit]
+Description=Qwen3.6-27B llama-server (multi-slot, no MTP) on :8080
+After=network-online.target
+Conflicts=qwen36.service
+
+[Service]
+Type=simple
+EnvironmentFile=%h/.config/qwen36-mtp/env
+Environment=CUDA_VISIBLE_DEVICES=0
+Environment=GGML_CUDA_ENABLE_UNIFIED_MEMORY=0
+ExecStart=%h/Dev/qwen36-mtp/scripts/run-multi.sh
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

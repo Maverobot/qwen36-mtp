@@ -1,0 +1,32 @@
+# Qwen3.6-27B llama-server, MTP single-slot profile, on :8080.
+#
+# Install (one-time):
+#   mkdir -p ~/.config/systemd/user
+#   ln -sf "$PWD/scripts/systemd/qwen36.service"       ~/.config/systemd/user/qwen36.service
+#   ln -sf "$PWD/scripts/systemd/qwen36-multi.service" ~/.config/systemd/user/qwen36-multi.service
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now qwen36          # or qwen36-multi
+#
+# Both units bind :8080 and are mutually exclusive via `Conflicts=`,
+# so `systemctl --user start qwen36-multi` automatically stops `qwen36`
+# (and vice versa). Tooling (omp, opencode, Copilot CLI) only ever needs to
+# point at http://127.0.0.1:8080/v1 — no config churn when you swap profiles.
+#
+# Edit %h-paths if you cloned the repo somewhere other than ~/Dev/qwen36-mtp.
+
+[Unit]
+Description=Qwen3.6-27B MTP llama-server (RTX 4090) on :8080
+After=network-online.target
+Conflicts=qwen36-multi.service
+
+[Service]
+Type=simple
+EnvironmentFile=%h/.config/qwen36-mtp/env
+Environment=CUDA_VISIBLE_DEVICES=0
+Environment=GGML_CUDA_ENABLE_UNIFIED_MEMORY=0
+ExecStart=%h/Dev/qwen36-mtp/scripts/run.sh
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

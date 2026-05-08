@@ -7,7 +7,8 @@
 #
 # Defaults (override by exporting before invocation, or via an EnvironmentFile):
 #   PARALLEL=4
-#   PORT=8081           (so it can run alongside the MTP profile on 8080)
+#   PORT=8080           (shared with the MTP profile; only one can run at a time
+#                        — see Conflicts= in qwen36{,-multi}.service)
 #   ALIAS=qwen3.6-27b-multi
 #   SPS=0.5             (--slot-prompt-similarity)
 #
@@ -22,7 +23,7 @@ set -e
 # scripts/run.sh directly with your own overrides.
 export DISABLE_MTP=1
 export PARALLEL=4
-export PORT=8081
+export PORT=8080
 export ALIAS=qwen3.6-27b-multi
 export SPS="${SPS:-0.5}"
 
