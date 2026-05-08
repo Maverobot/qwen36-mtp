@@ -15,6 +15,9 @@
 
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+
 # ---------- tunables --------------------------------------------------------
 PREFIX="${PREFIX:-$HOME/Dev/qwen36}"
 LLAMA_DIR="$PREFIX/llama.cpp"
@@ -56,11 +59,13 @@ mkdir -p "$PREFIX" "$MODEL_DIR"
 
 # shellcheck disable=SC1091
 source "$(conda info --base)/etc/profile.d/conda.sh"
+# shellcheck disable=SC1091
+source "$REPO_DIR/scripts/lib/conda-strict.sh"
 
 # ---------- 1. HF download env ---------------------------------------------
 log "Conda env for huggingface-hub: $HF_ENV"
 conda env list | awk '{print $1}' | grep -qx "$HF_ENV" || conda create -y -n "$HF_ENV" python=3.11
-conda activate "$HF_ENV"
+conda_activate "$HF_ENV"
 pip install -q --upgrade "huggingface-hub[hf_transfer]"
 
 # ---------- 2. download MTP-preserving GGUF --------------------------------
@@ -80,7 +85,7 @@ HF_HUB_ENABLE_HF_TRANSFER=1 \
   hf download "$MODEL_REPO" --local-dir "$MODEL_DIR" \
     --include "*.json" --include "tokenizer*" 2>/dev/null || true
 
-conda deactivate
+conda_deactivate
 
 # ---------- 3. CUDA toolkit env --------------------------------------------
 # Why an env? Driver-only Linux installs (Ubuntu 22/24, Debian) have no nvcc on
@@ -90,7 +95,7 @@ log "Conda env for CUDA toolkit: $BUILD_ENV ($CUDA_LABEL)"
 if ! conda env list | awk '{print $1}' | grep -qx "$BUILD_ENV"; then
   conda create -y -n "$BUILD_ENV" -c "nvidia/label/$CUDA_LABEL" cuda-toolkit
 fi
-conda activate "$BUILD_ENV"
+conda_activate "$BUILD_ENV"
 NVCC="$CONDA_PREFIX/bin/nvcc"
 [[ -x "$NVCC" ]] || die "nvcc not found in $BUILD_ENV"
 "$NVCC" --version | tail -1
@@ -153,10 +158,9 @@ cmake --build build --config Release -j "$JOBS" \
 [[ -x build/bin/llama-server ]] || die "build failed: build/bin/llama-server missing"
 log "  build OK -> $LLAMA_DIR/build/bin/"
 
-conda deactivate
+conda_deactivate
 
 # ---------- 6. config + launcher (single source of truth: this repo) -------
-REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LAUNCH="$REPO_DIR/scripts/run.sh"
 [[ -x "$LAUNCH" ]] || die "missing repo launcher: $LAUNCH (re-clone the repo)"
 

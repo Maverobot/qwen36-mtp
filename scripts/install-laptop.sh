@@ -21,6 +21,9 @@
 
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+
 # ---------- tunables --------------------------------------------------------
 PREFIX="${PREFIX:-$HOME/Dev/qwen36-laptop}"
 LLAMA_DIR="$PREFIX/llama.cpp"
@@ -60,11 +63,13 @@ fi
 
 # shellcheck disable=SC1091
 source "$(conda info --base)/etc/profile.d/conda.sh"
+# shellcheck disable=SC1091
+source "$REPO_DIR/scripts/lib/conda-strict.sh"
 
 # ---------- 1. HF download env ---------------------------------------------
 log "Conda env for huggingface-hub: $HF_ENV"
 conda env list | awk '{print $1}' | grep -qx "$HF_ENV" || conda create -y -n "$HF_ENV" python=3.11
-conda activate "$HF_ENV"
+conda_activate "$HF_ENV"
 pip install -q --upgrade "huggingface-hub[hf_transfer]"
 
 # ---------- 2. download i1-Q4_K_S GGUF -------------------------------------
@@ -85,14 +90,14 @@ HF_HUB_ENABLE_HF_TRANSFER=1 \
   hf download "$MODEL_REPO" --local-dir "$MODEL_DIR" \
     --include "*.json" --include "tokenizer*" 2>/dev/null || true
 
-conda deactivate
+conda_deactivate
 
 # ---------- 3. CUDA toolkit env (Blackwell) --------------------------------
 log "Conda env for CUDA toolkit: $BUILD_ENV ($CUDA_LABEL)"
 if ! conda env list | awk '{print $1}' | grep -qx "$BUILD_ENV"; then
   conda create -y -n "$BUILD_ENV" -c "nvidia/label/$CUDA_LABEL" cuda-toolkit
 fi
-conda activate "$BUILD_ENV"
+conda_activate "$BUILD_ENV"
 NVCC="$CONDA_PREFIX/bin/nvcc"
 [[ -x "$NVCC" ]] || die "nvcc not found in $BUILD_ENV"
 "$NVCC" --version | tail -1
@@ -113,17 +118,43 @@ if ! grep -rq "n-cpu-moe" common/ tools/ 2>/dev/null; then
 fi
 
 # ---------- 5. build llama.cpp with CUDA -----------------------------------
+# CMAKE_CUDA_RUNTIME_LIBRARY=Shared: conda's cudart package is shared-only;
+# without this flag CMake defaults to static linking which fails with
+# undefined references to @libcudart.so.12 symbols.
+#
+# CUDA 12.8+ conda packages may install libraries under
+# targets/x86_64-linux/lib/ rather than directly under lib/; discover the
+# actual path and export LIBRARY_PATH so the GCC linker subprocess finds
+# libcudart.so / libcublas.so regardless of cmake's own path detection.
+#
+# BUILD_SHARED_LIBS=OFF: avoids transitive shared-library dependency failures
+# where libggml-cuda.so's unresolved CUDA symbols cannot be satisfied when
+# linking llama-server.  Everything is statically bundled into one binary.
 log "Building llama.cpp (CUDA arch $CUDA_ARCH, $JOBS jobs)"
 rm -rf build
+
+# Locate the CUDA shared-library directory inside the conda env.
+_CUDA_LIB_DIR=$(find "$CONDA_PREFIX" -maxdepth 6 \
+  -name "libcudart.so*" -not -path "*/stubs/*" -not -name "*.a" \
+  2>/dev/null | head -1 | xargs -r dirname)
+[[ -d "$_CUDA_LIB_DIR" ]] || _CUDA_LIB_DIR="$CONDA_PREFIX/lib"
+log "  CUDA lib dir: $_CUDA_LIB_DIR"
+
+# LIBRARY_PATH is used by GCC/ld as an extra library search path and is
+# inherited by every linker invocation spawned by cmake/make.
+export LIBRARY_PATH="${_CUDA_LIB_DIR}:${CONDA_PREFIX}/lib${LIBRARY_PATH:+:$LIBRARY_PATH}"
+
 cmake -S . -B build \
   -DGGML_CUDA=ON \
   -DCMAKE_CUDA_ARCHITECTURES="$CUDA_ARCH" \
   -DCMAKE_CUDA_COMPILER="$NVCC" \
   -DCUDAToolkit_ROOT="$CONDA_PREFIX" \
+  -DCMAKE_CUDA_RUNTIME_LIBRARY=Shared \
+  -DBUILD_SHARED_LIBS=OFF \
   -DCMAKE_BUILD_TYPE=Release \
-  -DCMAKE_EXE_LINKER_FLAGS="-Wl,-rpath,$CONDA_PREFIX/lib -L$CONDA_PREFIX/lib" \
-  -DCMAKE_SHARED_LINKER_FLAGS="-Wl,-rpath,$CONDA_PREFIX/lib -L$CONDA_PREFIX/lib"
-cmake --build build --config Release -j "$JOBS"
+  -DCMAKE_EXE_LINKER_FLAGS="-Wl,-rpath,$_CUDA_LIB_DIR -Wl,-rpath,$CONDA_PREFIX/lib -L$_CUDA_LIB_DIR -L$CONDA_PREFIX/lib" \
+  -DCMAKE_SHARED_LINKER_FLAGS="-Wl,-rpath,$_CUDA_LIB_DIR -Wl,-rpath,$CONDA_PREFIX/lib -L$_CUDA_LIB_DIR -L$CONDA_PREFIX/lib"
+cmake --build build --config Release -j "$JOBS" --target llama-server
 
 LLAMA_BIN="$LLAMA_DIR/build/bin/llama-server"
 [[ -x "$LLAMA_BIN" ]] || die "llama-server not built"
@@ -146,6 +177,16 @@ CTX_SIZE=131072
 N_CPU_MOE=40
 EOF
 log "Wrote $ENV_FILE"
+
+# ---------- 7. symlink copilot-wrappers into ~/.local/bin ------------------
+LOCAL_BIN="$HOME/.local/bin"
+mkdir -p "$LOCAL_BIN"
+log "Symlinking copilot-wrappers -> $LOCAL_BIN"
+for _src in "$REPO_DIR/copilot-wrappers"/*; do
+  _dst="$LOCAL_BIN/$(basename "$_src")"
+  ln -sf "$_src" "$_dst"
+  log "  $_dst"
+done
 
 log "Done. Start the server with:"
 echo "  set -a; source $ENV_FILE; set +a; $(dirname "$0")/run-laptop.sh"
