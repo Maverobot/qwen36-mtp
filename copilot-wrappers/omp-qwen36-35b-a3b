@@ -60,4 +60,7 @@ if ! ss -tln 2>/dev/null | grep -q ":$PROXY_PORT "; then
   done
 fi
 
+# Fake it so that the local model is "authenticated" to be used as subagent. See https://github.com/can1357/oh-my-pi/issues/1008
+export LLAMA_CPP_API_KEY=dummy
+
 omp --model 'llama.cpp/qwen3.6-35b-a3b' "$@"
