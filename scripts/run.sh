@@ -8,7 +8,7 @@
 #   LLAMA_BIN        Absolute path to llama-server binary
 #   MODEL_PATH       Absolute path to the GGUF
 # Optional env (with defaults):
-#   CTX_SIZE         196608
+#   CTX_SIZE         131072
 #   PORT             8080
 #   HOST             0.0.0.0
 #   ALIAS            qwen3.6-27b
@@ -16,7 +16,7 @@
 #   CACHE_REUSE      256
 #   SPEC_DRAFT_N_MAX 4
 #   CHECKPOINT_MIN_STEP 2048
-#   PARALLEL         4   (upstream llama.cpp supports MTP with parallel slots)
+#   PARALLEL         2   (upstream llama.cpp supports MTP with parallel slots)
 #   DISABLE_MTP      <empty = MTP enabled>
 #   SPS              0.5 (only used when PARALLEL>1)
 #
@@ -27,14 +27,14 @@ set -e
 : "${LLAMA_BIN:?LLAMA_BIN env var is required}"
 : "${MODEL_PATH:?MODEL_PATH env var is required}"
 
-CTX_SIZE="${CTX_SIZE:-196608}"
+CTX_SIZE="${CTX_SIZE:-131072}"
 PORT="${PORT:-8080}"
 HOST="${HOST:-0.0.0.0}"
 ALIAS="${ALIAS:-qwen3.6-27b}"
 CACHE_REUSE="${CACHE_REUSE:-256}"
 SPEC_DRAFT_N_MAX="${SPEC_DRAFT_N_MAX:-4}"
 CHECKPOINT_MIN_STEP="${CHECKPOINT_MIN_STEP:-2048}"
-PARALLEL="${PARALLEL:-4}"
+PARALLEL="${PARALLEL:-2}"
 SPS="${SPS:-0.5}"
 
 slot_args=()

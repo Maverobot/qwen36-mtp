@@ -16,18 +16,26 @@ endpoint with one command.
 | --- | --- |
 | Real Qwen3.6 quality on 24 GB | dense 27B (or 35B-class with the right GGUF), q4 weights, q4 KV cache |
 | 100+ tok/s decode | NextN/MTP speculative decoding (~3× over no-MTP) |
-| Very large context (≥196K) | hybrid GatedDeltaNet + GatedAttention layout (only 16/64 layers carry softmax KV) |
+| Large context with safer 24 GB headroom | 131K default, configurable to ≥196K thanks to hybrid GatedDeltaNet + GatedAttention layout |
 | Strong prefix caching | upstream `--cache-idle-slots`, `--ctx-checkpoints`, KV-slot save/restore |
 | OpenAI-compatible | `llama-server` with `--jinja` and `--reasoning-format deepseek` |
 | Tool-calling | `--jinja` enables Qwen's tool-call template; LiteLLM in front recommended for heavy agents |
 
-## Measured numbers (RTX 4090, this script)
+## Measured numbers (RTX 4090, selected profiles)
 
-| ctx | decode | prefill | MTP accept | VRAM |
-| ---: | ---: | ---: | ---: | ---: |
-| 32 768 | 124 tok/s | 310 tok/s | 76.8 % | 18.8 GB |
-| 196 608 | 142 tok/s | 196 tok/s | 4/4 | 22.2 GB |
-| 262 144 | 159 tok/s | 342 tok/s | 4/4 | 23.8 GB |
+The default is now the quality-first/headroom profile: `CTX_SIZE=131072` and
+`PARALLEL=2`. The older 196K/262K profiles remain supported when you need more
+context and can spare VRAM.
+
+| ctx | parallel | decode | prefill | MTP accept | VRAM |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 32 768 | 4 | 124 tok/s | 310 tok/s | 76.8 % | 18.8 GB |
+| 131 072 | 2 | 47 tok/s | 1 741 tok/s | 45.3 % | 20.7 GB |
+| 196 608 | 4 | 142 tok/s | 196 tok/s | 4/4 | 22.2 GB |
+| 262 144 | 4 | 159 tok/s | 342 tok/s | 4/4 | 23.8 GB |
+
+131K row: `/completion`, `cache_prompt=false`, 120 071-token cold prompt,
+512-token decode, VRAM sampled immediately after the request.
 
 (HF model card reports 100.3 tok/s short-ctx on a 3090 Ti with the same recipe.)
 
@@ -87,11 +95,12 @@ systemctl --user restart qwen36
 
 Set `LLAMA_REF=<branch-or-tag>` if you want to pin a specific upstream revision.
 
-Override knobs via env vars (defaults are tuned for a single RTX 4090 with 24 GB):
+Override knobs via env vars. Defaults are quality-first with safer 24 GB
+headroom: `CTX_SIZE=131072`, `PARALLEL=2`.
 
 ```bash
 PREFIX=$HOME/llm/qwen36 \
-CTX_SIZE=131072 \
+CTX_SIZE=196608 \
 PARALLEL=4 \
 PORT=8081 \
 ./scripts/install.sh
@@ -161,10 +170,10 @@ curl -s http://localhost:8080/v1/chat/completions -H 'Content-Type: application/
 MTP with parallel slots. This repo therefore uses **one service**:
 
 ```bash
---spec-type draft-mtp --spec-draft-n-max 4 --parallel 4 --kv-unified
+--spec-type draft-mtp --spec-draft-n-max 4 --parallel 2 --kv-unified
 ```
 
-`PARALLEL=4` is written to `~/.config/qwen36-mtp/env` by the installer and is
+`PARALLEL=2` is written to `~/.config/qwen36-mtp/env` by the installer and is
 also the default in `scripts/run.sh`. Tooling (omp, opencode, Copilot CLI) only
 needs `http://127.0.0.1:8080/v1`.
 
@@ -180,8 +189,8 @@ Tune slots by editing `PARALLEL` in `~/.config/qwen36-mtp/env` and restarting:
 
 ```bash
 PARALLEL=1   # lowest memory / old single-slot behavior
-PARALLEL=2   # light concurrency
-PARALLEL=4   # default for agents/subagents
+PARALLEL=2   # default: light concurrency with safer 24 GB headroom
+PARALLEL=4   # higher concurrency for agents/subagents; costs more VRAM
 systemctl --user restart qwen36
 ```
 
@@ -279,7 +288,7 @@ opencode each have their own merging-proxy lane.
 
 > **Tip — context window auto-detection.** Both omp and opencode wrappers
 > query `$UPSTREAM/props` at launch time and write the running server's
-> actual `n_ctx` (e.g. `196608`) into the harness's config: `models.yml` for
+> actual `n_ctx` (e.g. `131072`) into the harness's config: `models.yml` for
 > omp, the model's `limit.context` field for opencode. So if you change
 > `CTX_SIZE` in `~/.config/qwen36-mtp/env` and restart the server, the
 > harness's status-line context indicator follows automatically — no
@@ -459,13 +468,14 @@ modest.
   reported for multi-GB transfers. The installer uses `hf` (huggingface-hub) +
   `hf_transfer` instead.
 - 262 144 ctx leaves only ~700 MB VRAM headroom; risky if anything else
-  touches the GPU. 196 608 is the recommended default.
+  touches the GPU. 131 072 is the recommended default; raise to 196 608 only
+  when you need the extra context and can spare the VRAM.
 - `llama-server` tool-calling via `--jinja` works for simple agents. For
   multi-tool / strict-schema workloads, put **LiteLLM** in front of it.
 - This recipe is dense-27B-specific. A 35B variant would need its own GGUF and
   possibly a different `CTX_SIZE`.
 - Upstream MTP uses `--spec-type draft-mtp`. `scripts/run.sh` enables it with
-  `PARALLEL=4` by default. `scripts/run-multi.sh` / `qwen36-multi.service` are
+  `PARALLEL=2` by default. `scripts/run-multi.sh` / `qwen36-multi.service` are
   deprecated compatibility shims for old installs.
 
 ## Credits

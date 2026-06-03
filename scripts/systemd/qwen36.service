@@ -1,5 +1,5 @@
 [Unit]
-Description=Qwen3.6-27B MTP llama-server (RTX 4090, parallel=4)
+Description=Qwen3.6-27B MTP llama-server (RTX 4090, parallel=2)
 After=network-online.target
 Conflicts=qwen36-multi.service
 

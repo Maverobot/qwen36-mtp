@@ -2,10 +2,11 @@
 # Deprecated compatibility wrapper for the old qwen36-multi profile.
 #
 # Upstream llama.cpp now supports MTP with PARALLEL>1, so keep one service
-# (`qwen36.service`) with the default PARALLEL=4. This wrapper exists only so
-# old qwen36-multi.service units keep working during migration.
+# (`qwen36.service`) with the default PARALLEL=2. This wrapper exists only so
+# old qwen36-multi.service units keep their historical PARALLEL=4 behavior
+# during migration.
 #
-# Compatibility defaults:
+# Compatibility override:
 #   PARALLEL=4
 #   PORT / ALIAS are inherited from the environment, exactly like scripts/run.sh.
 #   SPS=0.5             (--slot-prompt-similarity)
@@ -16,7 +17,7 @@
 set -e
 
 if [[ -z "${QWEN36_SUPPRESS_DEPRECATION:-}" ]]; then
-    echo "DEPRECATED: scripts/run-multi.sh and qwen36-multi.service are deprecated. Use qwen36.service; PARALLEL=4 is now the default." >&2
+    echo "DEPRECATED: scripts/run-multi.sh and qwen36-multi.service are deprecated. Use qwen36.service; this compatibility wrapper still forces PARALLEL=4." >&2
 fi
 
 # Force old multi units onto the new upstream-MTP parallel path, but preserve

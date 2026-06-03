@@ -9,9 +9,11 @@
 #
 # Reference numbers (HF model card, 3090 Ti, same recipe):
 #   100.3 tok/s short-ctx decode, 70-73 tok/s mean over 4K..256K, 86.6% MTP accept.
-# Measured on a stock RTX 4090 with this script:
-#   196 608 ctx -> 141 tok/s decode, 196 tok/s prefill, 4/4 MTP accept, 22.2 GB VRAM.
-#   262 144 ctx -> 159 tok/s decode, 342 tok/s prefill, 4/4 MTP accept, 23.8 GB VRAM.
+# Measured on a stock RTX 4090 with selected profiles:
+#   131 072 ctx / parallel=2 -> 47 tok/s decode, 1 741 tok/s prefill,
+#       45.3% MTP accept, 20.7 GB VRAM (120 071-token cold prompt + 512 decode).
+#   196 608 ctx / parallel=4 -> 141 tok/s decode, 196 tok/s prefill, 4/4 MTP accept, 22.2 GB VRAM.
+#   262 144 ctx / parallel=4 -> 159 tok/s decode, 342 tok/s prefill, 4/4 MTP accept, 23.8 GB VRAM.
 
 set -euo pipefail
 
@@ -28,8 +30,8 @@ HF_ENV="${HF_ENV:-qwen36-hf}"
 BUILD_ENV="${BUILD_ENV:-qwen36-build}"
 CUDA_LABEL="${CUDA_LABEL:-cuda-12.4.1}"   # conda nvidia channel label
 CUDA_ARCH="${CUDA_ARCH:-89}"               # 89 = Ada / RTX 4090; 86 = Ampere / 3090
-CTX_SIZE="${CTX_SIZE:-196608}"             # safe on 24 GB (~22.2 GB used)
-PARALLEL="${PARALLEL:-4}"
+CTX_SIZE="${CTX_SIZE:-131072}"             # quality-first with safer 24 GB headroom
+PARALLEL="${PARALLEL:-2}"
 PORT="${PORT:-8080}"
 JOBS="$(nproc)"
 
@@ -215,7 +217,7 @@ log "Wrote systemd user unit: $SVC"
 
 # qwen36-multi.service is deprecated. Existing units continue to work through
 # scripts/run-multi.sh as a compatibility shim, but fresh installs should use
-# qwen36.service. PARALLEL=4 is now the default in $CONF.
+# qwen36.service. PARALLEL=$PARALLEL is now the default in $CONF.
 
 # ---------- 8. summary ------------------------------------------------------
 cat <<EOF
@@ -252,8 +254,9 @@ Smoke test:
     -d '{"model":"qwen3.6-27b","messages":[{"role":"user","content":"write a python prime sieve"}]}' | jq .
 
 Caveats:
-  * --ctx-size $CTX_SIZE is tuned for 24 GB. Raise toward 262144 only if no
-    other workload uses the GPU; drop to 65536 for quickest prefill.
+  * --ctx-size $CTX_SIZE keeps more 24 GB headroom than the old 196608 default.
+    Raise toward 196608/262144 only if no other workload uses the GPU; drop to
+    65536 for quickest prefill.
   * Thinking is on by default. With --reasoning-format deepseek the <think>
     block lands in response.reasoning_content; content stays clean. To disable
     per-request: chat_template_kwargs={"enable_thinking": false}.
