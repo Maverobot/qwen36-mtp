@@ -4,11 +4,11 @@ High-performance local serving of **Qwen3.6 with Multi-Token Prediction (MTP)**
 on a single 24 GB consumer GPU (tested on RTX 4090; should also work on RTX 3090
 with `CUDA_ARCH=86`).
 
-The point of this repo is to capture the *exact* recipe — patched
-[llama.cpp](https://github.com/ggerganov/llama.cpp) fork, MTP-preserving GGUF,
-CUDA-toolkit-via-conda, shared-cudart link fix, sane launch flags — so that a
-fresh box can go from zero to a working OpenAI-compatible endpoint with one
-command.
+The point of this repo is to capture the *exact* recipe — upstream
+[llama.cpp](https://github.com/ggml-org/llama.cpp) with merged MTP support,
+MTP-preserving GGUF, CUDA-toolkit-via-conda, shared-cudart link fix, sane launch
+flags — so that a fresh box can go from zero to a working OpenAI-compatible
+endpoint with one command.
 
 ## Why this stack?
 
@@ -17,7 +17,7 @@ command.
 | Real Qwen3.6 quality on 24 GB | dense 27B (or 35B-class with the right GGUF), q4 weights, q4 KV cache |
 | 100+ tok/s decode | NextN/MTP speculative decoding (~3× over no-MTP) |
 | Very large context (≥196K) | hybrid GatedDeltaNet + GatedAttention layout (only 16/64 layers carry softmax KV) |
-| Strong prefix caching | `--cache-idle-slots`, `--ctx-checkpoints`, KV-slot save/restore baked into the fork |
+| Strong prefix caching | upstream `--cache-idle-slots`, `--ctx-checkpoints`, KV-slot save/restore |
 | OpenAI-compatible | `llama-server` with `--jinja` and `--reasoning-format deepseek` |
 | Tool-calling | `--jinja` enables Qwen's tool-call template; LiteLLM in front recommended for heavy agents |
 
@@ -40,7 +40,7 @@ command.
 | warm again | **0.38 s** | 514 | 3112 |
 
 ~7.5× faster TTFT on subsequent calls thanks to `--cache-reuse 256`,
-`--cache-idle-slots`, and the patched fork's KV-slot persistence.
+`--cache-idle-slots`, and upstream llama.cpp's KV-slot persistence.
 
 ### Tuning `--cache-reuse` (RTX 4090)
 
@@ -56,9 +56,9 @@ The bigger wins were already on by default in this repo:
 | flag | effect |
 | --- | --- |
 | `--cache-idle-slots` | keep slot KV warm across requests within a server lifetime |
-| `--slot-save-path` (+ patched fork) | auto-save/restore slot KV to disk; survives `systemctl restart qwen36` |
-| `--ctx-checkpoints 8 --checkpoint-every-n-tokens 2048` | mid-prefill snapshots so partial cancels don't waste work |
-| `--cache-ram -1 --kv-unified` | unlimited RAM-side overflow + the unified-KV mode required by the above |
+| `--slot-save-path` | auto-save/restore slot KV to disk; survives `systemctl restart qwen36` |
+| `--ctx-checkpoints 8 --checkpoint-min-step 2048` | context snapshots for recurrent/hybrid KV reuse without overly dense checkpoints |
+| `--cache-ram -1 --kv-unified` | unlimited RAM-side overflow + the unified-KV mode required by idle-slot caching |
 
 ## Install
 
@@ -72,11 +72,27 @@ cd qwen36-mtp
 ./scripts/install.sh
 ```
 
+If you previously installed the old `crucible-mtp` fork, stop the service and
+rerun the installer. It fetches `ggml-org/llama.cpp` into the existing checkout,
+leaves old fork branches intact, and builds detached upstream `master`:
+
+```bash
+systemctl --user disable --now qwen36-multi 2>/dev/null || true
+rm -f ~/.config/systemd/user/qwen36-multi.service
+systemctl --user stop qwen36 2>/dev/null || true
+./scripts/install.sh
+systemctl --user daemon-reload
+systemctl --user restart qwen36
+```
+
+Set `LLAMA_REF=<branch-or-tag>` if you want to pin a specific upstream revision.
+
 Override knobs via env vars (defaults are tuned for a single RTX 4090 with 24 GB):
 
 ```bash
 PREFIX=$HOME/llm/qwen36 \
 CTX_SIZE=131072 \
+PARALLEL=4 \
 PORT=8081 \
 ./scripts/install.sh
 ```
@@ -91,12 +107,16 @@ If you're on a different GPU, override `CUDA_ARCH` to match it:
 
 The script creates:
 
-- `$PREFIX/llama.cpp/build/bin/llama-server` — patched binary
+- `$PREFIX/llama.cpp/build/bin/llama-server` — upstream-built binary
 - `$PREFIX/models/qwen36-27b-mtp/Qwen3.6-27B-MTP-IQ4_XS.gguf` — ~14 GiB
 - `$PREFIX/slot-cache/` — on-disk slot KV cache (auto-save/restore across restarts)
 - `~/.config/qwen36-mtp/env` — runtime config (paths, ctx size, port, …)
-- `~/.config/systemd/user/qwen36.service` — auto-start unit; ExecStart points
+- `~/.config/systemd/user/qwen36.service` — MTP parallel unit; ExecStart points
   at `scripts/run.sh` *in this repo* so `git pull` updates the launcher.
+
+`qwen36-multi.service` is deprecated and is no longer created by fresh installs.
+Old units still work through `scripts/run-multi.sh`, which now shims to the same
+MTP + `PARALLEL=4` path and prints a deprecation warning.
 
 ## Architecture: single source of truth
 
@@ -135,135 +155,50 @@ curl -s http://localhost:8080/v1/chat/completions -H 'Content-Type: application/
   -d '{"model":"qwen3.6-27b","messages":[{"role":"user","content":"reply: pong"}]}'
 ```
 
-### Two profiles, one port
+### Parallel MTP is the default
 
-The repo ships two launchers and matching systemd unit templates under
-`scripts/systemd/`. **Both bind `:8080`** and are wired with `Conflicts=`, so
-exactly one runs at a time and your tooling (omp, opencode, Copilot CLI) only
-ever needs to point at `http://127.0.0.1:8080/v1`:
-
-| Profile        | Launcher              | Unit                  | Port | MTP | Slots | When to use                                      |
-|----------------|-----------------------|-----------------------|-----:|:---:|:----:|--------------------------------------------------|
-| **MTP single** | `scripts/run.sh`      | `qwen36.service`      | 8080 |  ✓  |  1   | Single-stream coding; max tok/s (~100+)          |
-| **multi**      | `scripts/run-multi.sh`| `qwen36-multi.service`| 8080 |  ✗  |  4   | Concurrent agents/subagents (e.g. Copilot CLI)   |
-
-Install the unit templates once (idempotent):
+`llama.cpp` merged MTP in `ggml-org/llama.cpp#22673`, and upstream now supports
+MTP with parallel slots. This repo therefore uses **one service**:
 
 ```bash
-ln -sf "$PWD/scripts/systemd/qwen36.service"       ~/.config/systemd/user/qwen36.service
-ln -sf "$PWD/scripts/systemd/qwen36-multi.service" ~/.config/systemd/user/qwen36-multi.service
+--spec-type draft-mtp --spec-draft-n-max 4 --parallel 4 --kv-unified
+```
+
+`PARALLEL=4` is written to `~/.config/qwen36-mtp/env` by the installer and is
+also the default in `scripts/run.sh`. Tooling (omp, opencode, Copilot CLI) only
+needs `http://127.0.0.1:8080/v1`.
+
+Install the unit template once (idempotent):
+
+```bash
+ln -sf "$PWD/scripts/systemd/qwen36.service" ~/.config/systemd/user/qwen36.service
+systemctl --user daemon-reload
+systemctl --user enable --now qwen36
+```
+
+Tune slots by editing `PARALLEL` in `~/.config/qwen36-mtp/env` and restarting:
+
+```bash
+PARALLEL=1   # lowest memory / old single-slot behavior
+PARALLEL=2   # light concurrency
+PARALLEL=4   # default for agents/subagents
+systemctl --user restart qwen36
+```
+
+`qwen36-multi.service` is deprecated. If an older install already has that unit,
+it will still start `scripts/run-multi.sh`, but the wrapper now unsets stale
+`DISABLE_MTP`, forces `PARALLEL=4`, preserves host-specific `PORT` / `ALIAS`, and
+prints a deprecation warning. You can remove it after migrating:
+
+```bash
+systemctl --user disable --now qwen36-multi 2>/dev/null || true
+rm -f ~/.config/systemd/user/qwen36-multi.service
 systemctl --user daemon-reload
 ```
 
-Then swap profiles freely — starting one auto-stops the other:
-
-```bash
-systemctl --user start qwen36         # MTP profile  (auto-stops qwen36-multi)
-systemctl --user start qwen36-multi   # multi profile (auto-stops qwen36)
-```
-
-Measured tok/s on RTX 4090 (Qwen3.6-27B-MTP-IQ4_XS, 196 608 ctx, q4_0 KV):
-- **MTP profile**: ~83–106 tok/s single-stream
-- **multi profile**: ~48 tok/s at N=1 → **44 tok/s/stream at N=2 (88 aggregate)** → **35 tok/s/stream at N=4 (140 aggregate)**
-
-Quantized KV (`-ctk/-ctv q4_0`) and the 192k-ctx unified KV layout cost ~10–15%
-single-stream decode versus a stripped baseline; the trade is long context plus
-N=4 concurrency without VRAM thrash.
-
-#### Which profile should I pick?
-
-The right answer depends on **how often two of your requests overlap in time**,
-not on how many CLI windows you have open. Per-slot decode in the multi profile
-drops with concurrency because all slots share the same KV bandwidth and
-compute, while MTP's ~3× single-stream speedup from NextN draft acceptance is
-unavailable in the multi profile (the patch hard-disables `--spec-type mtp`
-under `--parallel >1`; see "MTP × multi-slot is mutually exclusive" below).
-
-| Concurrent in-flight requests | Best profile | Why |
-|---|---|---|
-| **1** (one CLI, one prompt at a time) | MTP `:8080` | ~100 tok/s beats ~70 — MTP single-stream is unbeatable. |
-| **2** (e.g. Copilot CLI main + a subagent dispatch, or omp + opencode side-by-side) | **multi N=2** | MTP queues request #2 → effective ~50 tok/s each. Multi at N=2 gives ~44 tok/s each, in parallel (88 aggregate). |
-| **3-4** (planner + executors, fan-out subagents, you + CI) | **multi N=4** | MTP serializes everything (caps at 106 tok/s aggregate). Multi N=4 hits ~140 aggregate (~35 each). |
-| **>4** | none — KV bandwidth saturates; per-slot drops below ~25 tok/s. Queue at the orchestrator instead. |
-
-Rule of thumb:
-
-- **Solo coding, one CLI window, no subagents** → MTP. (~3× faster perceived
-  latency for the one stream that matters.)
-- **Subagent-driven harnesses** (Copilot CLI agent fan-out, opencode
-  planner+executor, autoresearch loops, anything that calls the model from
-  background tasks while you're still typing) → **multi N=4**. Wall-clock for
-  the user-visible task is `max(slot_times)`, not `sum(slot_times)`, so even
-  with the per-slot penalty 3 parallel streams finish faster than 3 serialized
-  ones.
-- **Two harnesses at once** (omp + opencode) → multi N=2 is the sweet spot:
-  minimal per-slot penalty, no queueing.
-
-Empirical switch criterion: run `journalctl --user -u qwen36 -f` during ~30
-minutes of your real usage. If you see request-queueing patterns
-(`update_slots: ... waiting` or `all slots are idle (n=1, depth=2+)`) you're
-losing wall-clock to MTP serialization → switch. If slot 0 is mostly idle
-between bursts, stay on MTP.
-
-#### MTP × multi-slot is mutually exclusive (why)
-
-In the `crucible-mtp` fork, MTP and `--parallel >1` cannot be combined. This
-isn't a config choice — it's a scope limitation in the original MTP patch
-(`10829dbcc llama + spec: MTP support`). Three concrete reasons in the source:
-
-1. **Cross-ubatch hidden-state pairing is a single buffer.**
-   `src/llama-mtp.h` defines:
-
-   ```cpp
-   struct llama_mtp {
-       std::vector<float> pending_h;     // last h-row of previous ubatch
-       llama_pos          pending_pos = -1;
-   };
-   ```
-
-   The MTP draft head consumes `(h_p, x_{p+1})` pairs — the target's hidden
-   state at position `p` paired with the *next* token. The last h-row of one
-   ubatch needs the first token of the next ubatch to pair with, so it's
-   stashed in `pending_h`. That's a single vector, one position. Two parallel
-   slots would clobber each other's pending row.
-
-2. **The MTP draft state hardcodes `seq_id=0` and `n_seq_max=1`.**
-   `common/speculative.cpp:631-636` — verbatim:
-
-   ```cpp
-   // TODO: multiple seq support
-   batch = llama_batch_init(/*n_tokens=*/ 1, /*embd=*/ n_embd, /*n_seq_max=*/ 1);
-   ...
-   batch.seq_id[0][0] = 0;
-   ```
-
-   Every `llama_memory_seq_*` call against the MTP context (lines 659, 681,
-   695, 753) passes `seq_id=0`. The MTP KV literally has no per-slot dimension.
-
-3. **The hard guard then refuses to start.**
-   `tools/server/server-context.cpp:964-967`:
-
-   ```cpp
-   if (params_base.n_parallel > 1) {
-       SRV_ERR("MTP currently supports only n_parallel=1; got %d\n",
-               params_base.n_parallel);
-       return false;
-   }
-   ```
-
-The same root cause is also why the patch auto-disables `--cache-reuse` and
-`--ctx-shift` whenever MTP is active (server-context.cpp:977-984): both
-features rearrange the target KV (drop a middle range, copy a prefix from
-another slot, slide tokens), invalidating the `(h_p, x_{p+1})` invariant the
-streaming hook relies on. Rather than detect every cache mutation and
-selectively reset `pending_h`, the patch just turns those features off.
-
-Lifting the n_parallel limit upstream would mean: per-seq-id `pending_h` /
-`pending_pos` vectors, threading `seq_id` through `common_speculative_state_mtp`,
-either spawning N MTP contexts (memory-heavy) or partitioning the single MTP
-ctx's KV (`n_seq_max = N`), and re-enabling `cache_reuse` / `ctx_shift` with
-proper invalidation hooks. That's real design work — hence the explicit
-`// TODO` and the auto-disabled adjacent features.
+Measured no-MTP multi-slot numbers from the old fork-era profile were useful for
+the crossover decision, but upstream parallel MTP replaces that split. Re-run
+your local benchmark after migration if exact per-slot throughput matters.
 
 ## Use with the GitHub Copilot CLI
 
@@ -375,14 +310,14 @@ from `mradermacher/Qwen3.6-35B-A3B-i1-GGUF` (`i1-Q4_K_S`, ~20 GiB):
 
 - builds llama.cpp with `CUDA_ARCH=120` (Blackwell sm_120) against
   conda's `cuda-12.8.1` toolkit (12.4 doesn't ship sm_120 PTX),
-- runs upstream master rather than the `crucible-mtp` fork. The Qwen3.6-35B-A3B
-  base model *does* ship an MTP head per Alibaba's model card (vLLM and SGLang
-  both expose `--speculative-config '{"method":"mtp",...}'` for it), but the
-  i1-Q4_K_S GGUF we use (`mradermacher/Qwen3.6-35B-A3B-i1-GGUF`) drops it
-  during conversion — `gguf-py` reports 0 tensors named `mtp*`/`nextn*` out of
-  733 total. Upstream llama.cpp also has no MTP runtime path for the
-  `qwen35moe` arch yet, so the fork would buy us nothing here. We want
-  upstream's `--n-cpu-moe` flag instead,
+- runs upstream master. The Qwen3.6-35B-A3B base model *does* ship an MTP head
+  per Alibaba's model card (vLLM and SGLang both expose
+  `--speculative-config '{"method":"mtp",...}'` for it), and upstream
+  llama.cpp now has MTP support. The specific i1-Q4_K_S GGUF we use
+  (`mradermacher/Qwen3.6-35B-A3B-i1-GGUF`) drops that head during conversion —
+  `gguf-py` reports 0 tensors named `mtp*`/`nextn*` out of 733 total — so the
+  laptop launcher intentionally omits `--spec-type draft-mtp` and focuses on
+  upstream's `--n-cpu-moe` flag,
 - `--n-cpu-moe 40` keeps every layer's MoE expert tensors on CPU (the experts
   are ~17 GiB and won't fit in 12 GiB VRAM); attention/router/embeddings stay
   on the GPU,
@@ -529,16 +464,13 @@ modest.
   multi-tool / strict-schema workloads, put **LiteLLM** in front of it.
 - This recipe is dense-27B-specific. A 35B variant would need its own GGUF and
   possibly a different `CTX_SIZE`.
-- **MTP and multi-slot are mutually exclusive** in the `crucible-mtp` fork —
-  the server refuses to start with `--spec-type mtp` and `--parallel >1`. See
-  the "Which profile should I pick?" and "MTP × multi-slot is mutually
-  exclusive (why)" sections under [Two profiles](#two-profiles) for the
-  per-usage-pattern crossover and the source-level reasons. `scripts/run.sh`
-  picks the right flags automatically based on `PARALLEL` / `DISABLE_MTP`.
+- Upstream MTP uses `--spec-type draft-mtp`. `scripts/run.sh` enables it with
+  `PARALLEL=4` by default. `scripts/run-multi.sh` / `qwen36-multi.service` are
+  deprecated compatibility shims for old installs.
 
 ## Credits
 
-- Patched llama.cpp fork: [`nickstx/llama.cpp#crucible-mtp`](https://github.com/nickstx/llama.cpp/tree/crucible-mtp)
+- Upstream MTP support: [`ggml-org/llama.cpp#22673`](https://github.com/ggml-org/llama.cpp/pull/22673)
 - MTP-preserving GGUF: [`localweights/Qwen3.6-27B-MTP-IQ4_XS-GGUF`](https://huggingface.co/localweights/Qwen3.6-27B-MTP-IQ4_XS-GGUF)
 - Reference recipe + 100 tok/s claim: noonghunna's `qwen36-27b-single-3090` writeup
 

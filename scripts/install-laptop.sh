@@ -8,9 +8,9 @@
 #   * Different model (35B-A3B MoE) and different quant (mradermacher i1-Q4_K_S).
 #   * The MoE-A3B model needs --n-cpu-moe at runtime (set in run-laptop.sh) so
 #     the 20 GB of experts live in RAM while attention/router/embeddings stay
-#     on the 12 GB GPU. We do NOT need the crucible-mtp fork here: at the time
-#     of writing the official Qwen3.6-35B-A3B has no MTP head, so plain
-#     upstream llama.cpp is the right choice (and gets us native --n-cpu-moe).
+#     on the 12 GB GPU. We use plain upstream llama.cpp: it has --n-cpu-moe and
+#     upstream MTP support, but the i1-Q4_K_S GGUF used here does not include an
+#     MTP head, so run-laptop.sh intentionally does not pass --spec-type.
 #
 # Reference numbers (community reports, RTX 5070 Ti laptop, i1-Q4_K_S, 128 K
 # ctx, Q8_0 KV, flash attention, --n-cpu-moe 40):
@@ -43,6 +43,7 @@ log()  { printf '\033[1;32m[+] %s\033[0m\n' "$*"; }
 warn() { printf '\033[1;33m[!] %s\033[0m\n' "$*"; }
 die()  { printf '\033[1;31m[x] %s\033[0m\n' "$*" >&2; exit 1; }
 have() { command -v "$1" >/dev/null 2>&1; }
+conda_env_prefix() { conda env list | awk -v name="$1" '$1 == name {print $NF; exit}'; }
 
 # ---------- 0. sanity -------------------------------------------------------
 log "Sanity checks"
@@ -96,10 +97,13 @@ conda_deactivate
 log "Conda env for CUDA toolkit: $BUILD_ENV ($CUDA_LABEL)"
 if ! conda env list | awk '{print $1}' | grep -qx "$BUILD_ENV"; then
   conda create -y -n "$BUILD_ENV" -c "nvidia/label/$CUDA_LABEL" cuda-toolkit
+elif [[ ! -x "$(conda_env_prefix "$BUILD_ENV")/bin/nvcc" ]]; then
+  log "  nvcc missing; installing cuda-toolkit into existing env"
+  conda install -y -n "$BUILD_ENV" -c "nvidia/label/$CUDA_LABEL" cuda-toolkit
 fi
 conda_activate "$BUILD_ENV"
 NVCC="$CONDA_PREFIX/bin/nvcc"
-[[ -x "$NVCC" ]] || die "nvcc not found in $BUILD_ENV"
+[[ -x "$NVCC" ]] || die "nvcc not found in $BUILD_ENV after installing cuda-toolkit"
 "$NVCC" --version | tail -1
 
 # ---------- 4. upstream llama.cpp ------------------------------------------
@@ -174,6 +178,7 @@ PORT=$PORT
 HOST=127.0.0.1
 ALIAS=qwen3.6-35b-a3b
 CTX_SIZE=262144
+CHECKPOINT_MIN_STEP=2048
 N_CPU_MOE=40
 EOF
 log "Wrote $ENV_FILE"

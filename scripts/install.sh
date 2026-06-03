@@ -2,7 +2,7 @@
 # One-shot installer: Qwen3.6-27B-MTP IQ4_XS on a single RTX 4090 (Linux).
 #
 # Stack:
-#   * patched llama.cpp (nickstx/crucible-mtp; KV-slot persistence already in)
+#   * upstream llama.cpp (MTP support merged in ggml-org/llama.cpp#22673)
 #   * MTP-preserving GGUF (localweights/Qwen3.6-27B-MTP-IQ4_XS-GGUF, ~14 GiB)
 #   * conda env qwen36-hf for huggingface-hub
 #   * conda env qwen36-build for the CUDA 12.4 toolkit (driver-only systems)
@@ -29,24 +29,20 @@ BUILD_ENV="${BUILD_ENV:-qwen36-build}"
 CUDA_LABEL="${CUDA_LABEL:-cuda-12.4.1}"   # conda nvidia channel label
 CUDA_ARCH="${CUDA_ARCH:-89}"               # 89 = Ada / RTX 4090; 86 = Ampere / 3090
 CTX_SIZE="${CTX_SIZE:-196608}"             # safe on 24 GB (~22.2 GB used)
+PARALLEL="${PARALLEL:-4}"
 PORT="${PORT:-8080}"
 JOBS="$(nproc)"
 
-LLAMA_FORK_URL="https://github.com/nickstx/llama.cpp.git"
-LLAMA_FORK_BRANCH="crucible-mtp"
-LLAMA_UPSTREAM_URL="https://github.com/ggerganov/llama.cpp.git"
-
-# Commit-message markers proving the KV-slot save/restore work is already
-# present in the fork (the fork rebases without preserving "#NNNNN" PR refs):
-KV_SLOT_MARKERS=("auto-save/restore slot state" "persist context checkpoints")
-# Upstream PR numbers, used only as fallback if markers aren't found:
-KV_SLOT_PRS=(20819 20822)
+LLAMA_UPSTREAM_URL="${LLAMA_UPSTREAM_URL:-https://github.com/ggml-org/llama.cpp.git}"
+LLAMA_REF="${LLAMA_REF:-master}"
+LLAMA_REMOTE_NAME="${LLAMA_REMOTE_NAME:-upstream}"
 
 # ---------- helpers ---------------------------------------------------------
 log()  { printf '\033[1;32m[+] %s\033[0m\n' "$*"; }
 warn() { printf '\033[1;33m[!] %s\033[0m\n' "$*"; }
 die()  { printf '\033[1;31m[x] %s\033[0m\n' "$*" >&2; exit 1; }
 have() { command -v "$1" >/dev/null 2>&1; }
+conda_env_prefix() { conda env list | awk -v name="$1" '$1 == name {print $NF; exit}'; }
 
 # ---------- 0. sanity -------------------------------------------------------
 log "Sanity checks"
@@ -94,47 +90,58 @@ conda_deactivate
 log "Conda env for CUDA toolkit: $BUILD_ENV ($CUDA_LABEL)"
 if ! conda env list | awk '{print $1}' | grep -qx "$BUILD_ENV"; then
   conda create -y -n "$BUILD_ENV" -c "nvidia/label/$CUDA_LABEL" cuda-toolkit
+elif [[ ! -x "$(conda_env_prefix "$BUILD_ENV")/bin/nvcc" ]]; then
+  log "  nvcc missing; installing cuda-toolkit into existing env"
+  conda install -y -n "$BUILD_ENV" -c "nvidia/label/$CUDA_LABEL" cuda-toolkit
 fi
 conda_activate "$BUILD_ENV"
 NVCC="$CONDA_PREFIX/bin/nvcc"
-[[ -x "$NVCC" ]] || die "nvcc not found in $BUILD_ENV"
+[[ -x "$NVCC" ]] || die "nvcc not found in $BUILD_ENV after installing cuda-toolkit"
 "$NVCC" --version | tail -1
 
-# ---------- 4. patched llama.cpp -------------------------------------------
-log "Cloning + patching llama.cpp"
+# ---------- 4. upstream llama.cpp ------------------------------------------
+log "Preparing upstream llama.cpp ($LLAMA_REF)"
 if [[ ! -d "$LLAMA_DIR/.git" ]]; then
-  if git ls-remote --exit-code --heads "$LLAMA_FORK_URL" "$LLAMA_FORK_BRANCH" >/dev/null 2>&1; then
-    git clone --branch "$LLAMA_FORK_BRANCH" "$LLAMA_FORK_URL" "$LLAMA_DIR"
-  else
-    warn "Fork unreachable; cloning upstream master (qwen35moe_mtp may be missing)"
-    git clone "$LLAMA_UPSTREAM_URL" "$LLAMA_DIR"
-  fi
+  git clone "$LLAMA_UPSTREAM_URL" "$LLAMA_DIR"
 fi
 
 cd "$LLAMA_DIR"
 
-# Detect whether KV-slot persistence is already merged (by commit-message content).
-KV_PRESENT=1
-for m in "${KV_SLOT_MARKERS[@]}"; do
-  git log --pretty=%s | grep -qiF "$m" || KV_PRESENT=0
-done
-if (( KV_PRESENT == 1 )); then
-  log "  KV-slot save/restore commits already present (no cherry-pick needed)"
-else
-  warn "  KV-slot markers not found; trying to cherry-pick from upstream"
-  git remote get-url upstream >/dev/null 2>&1 \
-    || git remote add upstream "$LLAMA_UPSTREAM_URL"
-  for PR in "${KV_SLOT_PRS[@]}"; do
-    if git fetch upstream "pull/$PR/head:pr-$PR" 2>/dev/null; then
-      git cherry-pick "pr-$PR" || {
-        warn "  cherry-pick of PR #$PR failed; skipping"
-        git cherry-pick --abort 2>/dev/null || true
-      }
-    else
-      warn "  PR #$PR not fetchable from upstream"
-    fi
-  done
+if ! git diff --quiet || ! git diff --cached --quiet; then
+  die "Existing llama.cpp checkout at $LLAMA_DIR has local changes. Commit/stash them or set PREFIX to a fresh path."
 fi
+
+# Keep any existing fork remote intact; fetch upstream into a dedicated remote
+# and build from a detached upstream ref. This migrates old crucible-mtp clones
+# without rewriting their local branches.
+if git remote get-url "$LLAMA_REMOTE_NAME" >/dev/null 2>&1; then
+  git remote set-url "$LLAMA_REMOTE_NAME" "$LLAMA_UPSTREAM_URL"
+else
+  git remote add "$LLAMA_REMOTE_NAME" "$LLAMA_UPSTREAM_URL"
+fi
+git fetch --prune "$LLAMA_REMOTE_NAME"
+
+if git rev-parse --verify --quiet "refs/remotes/$LLAMA_REMOTE_NAME/$LLAMA_REF" >/dev/null; then
+  git checkout --detach "$LLAMA_REMOTE_NAME/$LLAMA_REF"
+else
+  git fetch "$LLAMA_REMOTE_NAME" "$LLAMA_REF"
+  git checkout --detach FETCH_HEAD
+fi
+
+# Fail early if LLAMA_REF is too old for the upstream-MTP launcher flags.
+grep -Rqs '"draft-mtp"' common/ \
+  || die "llama.cpp checkout lacks draft-mtp support. Use LLAMA_REF=master or a post-#22673 commit."
+grep -Rqs -- '--slot-save-path' common/ tools/ \
+  || die "llama.cpp checkout lacks --slot-save-path support. Use a newer LLAMA_REF."
+grep -Rqs -- '--checkpoint-min-step' common/ tools/ \
+  || die "llama.cpp checkout lacks --checkpoint-min-step support. Use a newer LLAMA_REF."
+grep -Rqs -- '--kv-unified' common/ tools/ \
+  || die "llama.cpp checkout lacks --kv-unified support. Use a newer LLAMA_REF."
+grep -Rqs -- '--cache-idle-slots' common/ tools/ \
+  || die "llama.cpp checkout lacks --cache-idle-slots support. Use a newer LLAMA_REF."
+grep -Rqs -- '--slot-prompt-similarity' common/ tools/ \
+  || die "llama.cpp checkout lacks --slot-prompt-similarity support. Use a newer LLAMA_REF."
+log "  using llama.cpp commit $(git rev-parse --short HEAD)"
 
 # ---------- 5. build llama.cpp with CUDA -----------------------------------
 # Two non-obvious flags below:
@@ -179,6 +186,8 @@ ALIAS=qwen3.6-27b
 SLOT_CACHE_DIR=$PREFIX/slot-cache
 CACHE_REUSE=256
 SPEC_DRAFT_N_MAX=4
+CHECKPOINT_MIN_STEP=2048
+PARALLEL=$PARALLEL
 EOF
 
 # ---------- 7. systemd user unit -------------------------------------------
@@ -186,8 +195,9 @@ SVC="$HOME/.config/systemd/user/qwen36.service"
 mkdir -p "$(dirname "$SVC")"
 cat > "$SVC" <<EOF
 [Unit]
-Description=Qwen3.6-27B MTP llama-server (RTX 4090)
+Description=Qwen3.6-27B MTP llama-server (RTX 4090, parallel=$PARALLEL)
 After=network-online.target
+Conflicts=qwen36-multi.service
 
 [Service]
 Type=simple
@@ -203,27 +213,9 @@ WantedBy=default.target
 EOF
 log "Wrote systemd user unit: $SVC"
 
-# ---------- 7b. companion multi-slot (no-MTP) systemd unit -----------------
-LAUNCH_MULTI="$REPO_DIR/scripts/run-multi.sh"
-SVC_MULTI="$HOME/.config/systemd/user/qwen36-multi.service"
-cat > "$SVC_MULTI" <<EOF
-[Unit]
-Description=Qwen3.6-27B llama-server (multi-slot, no MTP) on :8081
-After=network-online.target
-
-[Service]
-Type=simple
-EnvironmentFile=$CONF
-Environment=CUDA_VISIBLE_DEVICES=0
-Environment=GGML_CUDA_ENABLE_UNIFIED_MEMORY=0
-ExecStart=$LAUNCH_MULTI
-Restart=on-failure
-RestartSec=5
-
-[Install]
-WantedBy=default.target
-EOF
-log "Wrote systemd user unit: $SVC_MULTI"
+# qwen36-multi.service is deprecated. Existing units continue to work through
+# scripts/run-multi.sh as a compatibility shim, but fresh installs should use
+# qwen36.service. PARALLEL=4 is now the default in $CONF.
 
 # ---------- 8. summary ------------------------------------------------------
 cat <<EOF
@@ -243,6 +235,16 @@ As a systemd user service (auto-start on login):
   systemctl --user daemon-reload
   systemctl --user enable --now qwen36
   # to keep running across logout: sudo loginctl enable-linger \$USER
+
+Parallel requests:
+  # upstream MTP supports parallel slots; PARALLEL=$PARALLEL is configured.
+  # Edit PARALLEL in $CONF if you want fewer/more slots, then restart:
+  systemctl --user restart qwen36
+
+Deprecated:
+  * qwen36-multi.service is no longer installed by this script. If an older
+    install already has it, it now runs scripts/run-multi.sh as a compatibility
+    shim, uses the same MTP parallel path, and prints a deprecation warning.
 
 Smoke test:
   curl -s http://localhost:$PORT/v1/chat/completions \\

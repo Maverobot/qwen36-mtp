@@ -1,9 +1,11 @@
-# Qwen3.6-27B llama-server, multi-slot profile (--parallel 4, no MTP), on :8080.
-# Mutually exclusive with qwen36.service via `Conflicts=` so both can share :8080.
-# See ./qwen36.service for installation instructions.
+# Deprecated compatibility unit for the old qwen36-multi profile.
+#
+# Upstream llama.cpp now supports MTP with --parallel >1, and qwen36.service
+# defaults to PARALLEL=4. This unit remains only so old installs keep working
+# while they migrate.
 
 [Unit]
-Description=Qwen3.6-27B llama-server (multi-slot, no MTP) on :8080
+Description=Deprecated Qwen3.6-27B compatibility shim (use qwen36.service with PARALLEL)
 After=network-online.target
 Conflicts=qwen36.service
 

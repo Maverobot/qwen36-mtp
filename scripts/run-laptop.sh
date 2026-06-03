@@ -15,6 +15,7 @@
 #   ALIAS            qwen3.6-35b-a3b
 #   SLOT_CACHE_DIR   <empty = disabled on-disk slot save/restore>
 #   CACHE_REUSE      256
+#   CHECKPOINT_MIN_STEP 2048
 #   N_CPU_MOE        40            (move all 40 layers' MoE expert tensors to CPU;
 #                                   keep attention/router/embeddings on GPU.
 #                                   Lower this if you have spare VRAM.)
@@ -49,6 +50,7 @@ PORT="${PORT:-8080}"
 HOST="${HOST:-127.0.0.1}"
 ALIAS="${ALIAS:-qwen3.6-35b-a3b}"
 CACHE_REUSE="${CACHE_REUSE:-256}"
+CHECKPOINT_MIN_STEP="${CHECKPOINT_MIN_STEP:-2048}"
 N_CPU_MOE="${N_CPU_MOE:-40}"
 PARALLEL="${PARALLEL:-1}"
 
@@ -68,8 +70,8 @@ exec "$LLAMA_BIN" \
   --ctx-size "$CTX_SIZE" \
   --batch-size 1024 --ubatch-size 512 \
   -ctk q8_0 -ctv q8_0 \
-  --parallel "$PARALLEL" \
-  --ctx-checkpoints 8 --checkpoint-every-n-tokens 2048 \
+  --parallel "$PARALLEL" --kv-unified \
+  --ctx-checkpoints 8 --checkpoint-min-step "$CHECKPOINT_MIN_STEP" \
   --cache-ram -1 --cache-idle-slots \
   --cache-reuse "$CACHE_REUSE" \
   "${slot_args[@]}" \
