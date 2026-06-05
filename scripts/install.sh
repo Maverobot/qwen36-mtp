@@ -1,19 +1,16 @@
 #!/usr/bin/env bash
-# One-shot installer: Qwen3.6-27B-MTP IQ4_XS on a single RTX 4090 (Linux).
+# One-shot installer: Qwen3.6-27B-MTP IQ4_NL on a single RTX 4090 (Linux).
 #
 # Stack:
 #   * upstream llama.cpp (MTP support merged in ggml-org/llama.cpp#22673)
-#   * MTP-preserving GGUF (localweights/Qwen3.6-27B-MTP-IQ4_XS-GGUF, ~14 GiB)
+#   * MTP-preserving GGUF (unsloth/Qwen3.6-27B-MTP-GGUF IQ4_NL, ~15.2 GiB)
 #   * conda env qwen36-hf for huggingface-hub
 #   * conda env qwen36-build for the CUDA 12.4 toolkit (driver-only systems)
 #
-# Reference numbers (HF model card, 3090 Ti, same recipe):
-#   100.3 tok/s short-ctx decode, 70-73 tok/s mean over 4K..256K, 86.6% MTP accept.
-# Measured on a stock RTX 4090 with selected profiles:
-#   131 072 ctx / parallel=2 -> 47 tok/s decode, 1 741 tok/s prefill,
-#       45.3% MTP accept, 20.7 GB VRAM (120 071-token cold prompt + 512 decode).
-#   196 608 ctx / parallel=4 -> 141 tok/s decode, 196 tok/s prefill, 4/4 MTP accept, 22.2 GB VRAM.
-#   262 144 ctx / parallel=4 -> 159 tok/s decode, 342 tok/s prefill, 4/4 MTP accept, 23.8 GB VRAM.
+# Current default model is Unsloth IQ4_NL-MTP. Local smoke test on a stock RTX 4090:
+#   131 072 ctx / parallel=2 -> loaded and answered, 20.7 GB nvidia-smi used
+#       after a short chat completion. Re-run throughput benchmarks locally before
+#       relying on exact tok/s for this quant.
 
 set -euo pipefail
 
@@ -24,8 +21,8 @@ REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 PREFIX="${PREFIX:-$HOME/Dev/qwen36}"
 LLAMA_DIR="$PREFIX/llama.cpp"
 MODEL_DIR="$PREFIX/models/qwen36-27b-mtp"
-MODEL_REPO="localweights/Qwen3.6-27B-MTP-IQ4_XS-GGUF"
-MODEL_FILE="Qwen3.6-27B-MTP-IQ4_XS.gguf"
+MODEL_REPO="unsloth/Qwen3.6-27B-MTP-GGUF"
+MODEL_FILE="Qwen3.6-27B-IQ4_NL.gguf"
 HF_ENV="${HF_ENV:-qwen36-hf}"
 BUILD_ENV="${BUILD_ENV:-qwen36-build}"
 CUDA_LABEL="${CUDA_LABEL:-cuda-12.4.1}"   # conda nvidia channel label
@@ -64,14 +61,14 @@ source "$REPO_DIR/scripts/lib/conda-strict.sh"
 log "Conda env for huggingface-hub: $HF_ENV"
 conda env list | awk '{print $1}' | grep -qx "$HF_ENV" || conda create -y -n "$HF_ENV" python=3.11
 conda_activate "$HF_ENV"
-pip install -q --upgrade "huggingface-hub[hf_transfer]"
+pip install -q --upgrade "huggingface-hub[hf_xet]"
 
 # ---------- 2. download MTP-preserving GGUF --------------------------------
 log "Downloading $MODEL_REPO -> $MODEL_DIR"
 if [[ -f "$MODEL_DIR/$MODEL_FILE" ]]; then
   log "  already present, skipping"
 else
-  HF_HUB_ENABLE_HF_TRANSFER=1 \
+  HF_XET_HIGH_PERFORMANCE=1 \
     hf download "$MODEL_REPO" "$MODEL_FILE" --local-dir "$MODEL_DIR"
 fi
 SIZE_BYTES=$(stat -c%s "$MODEL_DIR/$MODEL_FILE")
@@ -79,7 +76,7 @@ SIZE_BYTES=$(stat -c%s "$MODEL_DIR/$MODEL_FILE")
   || die "GGUF only $SIZE_BYTES bytes — likely corrupt (don't use aria2c for multi-GB models)"
 log "  GGUF OK ($((SIZE_BYTES/1024/1024/1024)) GiB)"
 
-HF_HUB_ENABLE_HF_TRANSFER=1 \
+HF_XET_HIGH_PERFORMANCE=1 \
   hf download "$MODEL_REPO" --local-dir "$MODEL_DIR" \
     --include "*.json" --include "tokenizer*" 2>/dev/null || true
 
@@ -255,8 +252,8 @@ Smoke test:
 
 Caveats:
   * --ctx-size $CTX_SIZE keeps more 24 GB headroom than the old 196608 default.
-    Raise toward 196608/262144 only if no other workload uses the GPU; drop to
-    65536 for quickest prefill.
+    With IQ4_NL, raise toward 196608 only after fit-testing; 262144 is likely
+    too tight on 24 GB with parallel slots. Drop to 65536 for quickest prefill.
   * Thinking is on by default. With --reasoning-format deepseek the <think>
     block lands in response.reasoning_content; content stays clean. To disable
     per-request: chat_template_kwargs={"enable_thinking": false}.

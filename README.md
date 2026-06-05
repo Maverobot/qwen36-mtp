@@ -23,9 +23,13 @@ endpoint with one command.
 
 ## Measured numbers (RTX 4090, selected profiles)
 
-The default is now the quality-first/headroom profile: `CTX_SIZE=131072` and
-`PARALLEL=2`. The older 196K/262K profiles remain supported when you need more
-context and can spare VRAM.
+The default is the quality-first/headroom profile: `CTX_SIZE=131072` and
+`PARALLEL=2`, now using Unsloth's MTP-preserving `IQ4_NL` GGUF. A local smoke
+test with this quant loaded and answered at 131K/parallel=2 with 20.7 GB
+nvidia-smi used after a short chat completion. Re-run throughput benchmarks
+locally before relying on exact tok/s for this quant.
+
+Historical selected-profile numbers from the previous `IQ4_XS` default:
 
 | ctx | parallel | decode | prefill | MTP accept | VRAM |
 | ---: | ---: | ---: | ---: | ---: | ---: |
@@ -37,7 +41,8 @@ context and can spare VRAM.
 131K row: `/completion`, `cache_prompt=false`, 120 071-token cold prompt,
 512-token decode, VRAM sampled immediately after the request.
 
-(HF model card reports 100.3 tok/s short-ctx on a 3090 Ti with the same recipe.)
+(The previous `IQ4_XS` model card reported 100.3 tok/s short-ctx on a 3090 Ti
+with the same launcher recipe.)
 
 ### Prefill-cache TTFT (RTX 4090, 196 608 ctx, 3 628-token prompt)
 
@@ -47,6 +52,7 @@ context and can spare VRAM.
 | warm (same preamble, different tail) | **0.42 s** | 515 | 3112 |
 | warm again | **0.38 s** | 514 | 3112 |
 
+These cache timings were also measured with the previous `IQ4_XS` default.
 ~7.5× faster TTFT on subsequent calls thanks to `--cache-reuse 256`,
 `--cache-idle-slots`, and upstream llama.cpp's KV-slot persistence.
 
@@ -117,7 +123,7 @@ If you're on a different GPU, override `CUDA_ARCH` to match it:
 The script creates:
 
 - `$PREFIX/llama.cpp/build/bin/llama-server` — upstream-built binary
-- `$PREFIX/models/qwen36-27b-mtp/Qwen3.6-27B-MTP-IQ4_XS.gguf` — ~14 GiB
+- `$PREFIX/models/qwen36-27b-mtp/Qwen3.6-27B-IQ4_NL.gguf` — ~15.2 GiB
 - `$PREFIX/slot-cache/` — on-disk slot KV cache (auto-save/restore across restarts)
 - `~/.config/qwen36-mtp/env` — runtime config (paths, ctx size, port, …)
 - `~/.config/systemd/user/qwen36.service` — MTP parallel unit; ExecStart points
@@ -466,10 +472,10 @@ modest.
   that env, set `LD_LIBRARY_PATH` to a CUDA 12 lib dir before launching.
 - Don't use `aria2c` for the GGUF download — silent corruption has been
   reported for multi-GB transfers. The installer uses `hf` (huggingface-hub) +
-  `hf_transfer` instead.
-- 262 144 ctx leaves only ~700 MB VRAM headroom; risky if anything else
-  touches the GPU. 131 072 is the recommended default; raise to 196 608 only
-  when you need the extra context and can spare the VRAM.
+  Xet instead.
+- 262 144 ctx was already tight on the previous `IQ4_XS` profile. `IQ4_NL` is
+  larger, so treat 196 608 / 262 144 as fit-test-only on 24 GB; 131 072 is the
+  recommended default.
 - `llama-server` tool-calling via `--jinja` works for simple agents. For
   multi-tool / strict-schema workloads, put **LiteLLM** in front of it.
 - This recipe is dense-27B-specific. A 35B variant would need its own GGUF and
@@ -481,7 +487,7 @@ modest.
 ## Credits
 
 - Upstream MTP support: [`ggml-org/llama.cpp#22673`](https://github.com/ggml-org/llama.cpp/pull/22673)
-- MTP-preserving GGUF: [`localweights/Qwen3.6-27B-MTP-IQ4_XS-GGUF`](https://huggingface.co/localweights/Qwen3.6-27B-MTP-IQ4_XS-GGUF)
+- MTP-preserving GGUF: [`unsloth/Qwen3.6-27B-MTP-GGUF`](https://huggingface.co/unsloth/Qwen3.6-27B-MTP-GGUF) (`Qwen3.6-27B-IQ4_NL.gguf`)
 - Reference recipe + 100 tok/s claim: noonghunna's `qwen36-27b-single-3090` writeup
 
 ## License
