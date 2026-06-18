@@ -34,7 +34,7 @@ HF_ENV="${HF_ENV:-qwen36-hf}"
 BUILD_ENV="${BUILD_ENV:-qwen36-build-blackwell}"
 CUDA_LABEL="${CUDA_LABEL:-cuda-12.8.1}"   # Blackwell support landed in 12.8
 CUDA_ARCH="${CUDA_ARCH:-120}"             # 120 = Blackwell consumer (5070/5080/5090)
-PORT="${PORT:-8080}"
+PORT="${PORT:-13636}"
 JOBS="$(nproc)"
 
 LLAMA_UPSTREAM_URL="https://github.com/ggml-org/llama.cpp.git"

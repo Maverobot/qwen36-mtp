@@ -10,7 +10,7 @@
 #   MODEL_PATH       Absolute path to the GGUF
 # Optional env (with defaults):
 #   CTX_SIZE         131072        (128 K — Qwen3.6 native is 262144 if you have RAM)
-#   PORT             8080
+#   PORT             13636
 #   HOST             127.0.0.1
 #   ALIAS            qwen3.6-35b-a3b
 #   SLOT_CACHE_DIR   <empty = disabled on-disk slot save/restore>
@@ -46,7 +46,7 @@ set -e
 : "${MODEL_PATH:?MODEL_PATH env var is required}"
 
 CTX_SIZE="${CTX_SIZE:-131072}"
-PORT="${PORT:-8080}"
+PORT="${PORT:-13636}"
 HOST="${HOST:-127.0.0.1}"
 ALIAS="${ALIAS:-qwen3.6-35b-a3b}"
 CACHE_REUSE="${CACHE_REUSE:-256}"

@@ -163,10 +163,10 @@ sudo loginctl enable-linger $USER     # keep running across logout
 LLAMA_BIN=...llama-server MODEL_PATH=...gguf ./scripts/run.sh
 ```
 
-Endpoint: `http://localhost:8080/v1` (model alias `qwen3.6-27b`).
+Endpoint: `http://localhost:13636/v1` (model alias `qwen3.6-27b`).
 
 ```bash
-curl -s http://localhost:8080/v1/chat/completions -H 'Content-Type: application/json' \
+curl -s http://localhost:13636/v1/chat/completions -H 'Content-Type: application/json' \
   -d '{"model":"qwen3.6-27b","messages":[{"role":"user","content":"reply: pong"}]}'
 ```
 
@@ -181,7 +181,7 @@ MTP with parallel slots. This repo therefore uses **one service**:
 
 `PARALLEL=2` is written to `~/.config/qwen36-mtp/env` by the installer and is
 also the default in `scripts/run.sh`. Tooling (omp, opencode, Copilot CLI) only
-needs `http://127.0.0.1:8080/v1`.
+needs `http://127.0.0.1:13636/v1`.
 
 Install the unit template once (idempotent):
 
@@ -275,20 +275,20 @@ opencode-qwen36-27b run "Reply with one word: pong"
 ```
 
 Each wrapper spawns its proxy on a **distinct port** so you can run several
-agents concurrently against the same llama-server on `:8080`:
+agents concurrently against the same llama-server on `:13636`:
 
 | Wrapper                       | Client       | Proxy port | Upstream |
 | ----------------------------- | ------------ | ---------: | -------- |
-| `copilot-qwen36-27b`          | Copilot CLI  |          — | `:8080` direct (Copilot CLI doesn't trip the multi-`system` bug) |
-| `copilot-qwen36-35b-a3b`      | Copilot CLI  |          — | `:8080` direct |
-| `omp-qwen36-27b`              | omp          |   **8091** | → `:8080` |
-| `opencode-qwen36-27b`         | opencode     |   **8092** | → `:8080` |
-| `omp-qwen36-35b-a3b`          | omp          |   **8093** | → `:8080` |
-| `opencode-qwen36-35b-a3b`     | opencode     |   **8094** | → `:8080` |
+| `copilot-qwen36-27b`          | Copilot CLI  |          — | `:13636` direct (Copilot CLI doesn't trip the multi-`system` bug) |
+| `copilot-qwen36-35b-a3b`      | Copilot CLI  |          — | `:13636` direct |
+| `omp-qwen36-27b`              | omp          |   **8091** | → `:13636` |
+| `opencode-qwen36-27b`         | opencode     |   **8092** | → `:13636` |
+| `omp-qwen36-35b-a3b`          | omp          |   **8093** | → `:13636` |
+| `opencode-qwen36-35b-a3b`     | opencode     |   **8094** | → `:13636` |
 
-So `:8080` is always the model server (one); the `:809x` ports are per-client
+So `:13636` is always the model server (one); the `:809x` ports are per-client
 adapter shims (one per harness × model). All the proxies forward to the same
-upstream — you can keep talking to the bare server on `:8080` (e.g. with
+upstream — you can keep talking to the bare server on `:13636` (e.g. with
 `curl /v1/chat/completions` or the Copilot CLI wrappers) while omp and
 opencode each have their own merging-proxy lane.
 
@@ -404,10 +404,10 @@ set -a; source ~/.config/qwen36-mtp/laptop.env; set +a
 ~/Dev/qwen36-mtp/scripts/run-laptop.sh
 ```
 
-Listens on `127.0.0.1:8080`, OpenAI-compatible at `/v1/chat/completions`. Test:
+Listens on `127.0.0.1:13636`, OpenAI-compatible at `/v1/chat/completions`. Test:
 
 ```bash
-curl -s http://127.0.0.1:8080/v1/chat/completions \
+curl -s http://127.0.0.1:13636/v1/chat/completions \
   -H 'Content-Type: application/json' \
   -d '{"model":"qwen3.6-35b-a3b","messages":[{"role":"user","content":"pong?"}]}'
 ```
@@ -418,7 +418,7 @@ curl -s http://127.0.0.1:8080/v1/chat/completions \
 |---|---|---|
 | `CTX_SIZE` | `131072` | Drop to `65536` if you OOM on KV; bump to `262144` only with ≥ 64 GiB RAM |
 | `N_CPU_MOE` | `40` | **Lower** (e.g. 36, 32) if you have spare VRAM — moves more experts onto GPU = faster decode |
-| `PORT` | `8080` | If 8080 is busy |
+| `PORT` | `13636` | If 13636 is busy |
 | `SLOT_CACHE_DIR` | unset | Set to e.g. `~/.cache/qwen36-laptop/slots` to persist KV across restarts |
 | `PARALLEL` | `1` | Bump to 2+ for concurrent agent slots (costs VRAM) |
 
@@ -449,7 +449,7 @@ journalctl --user -fu qwen36-laptop
 ```
 
 The omp/opencode wrappers above work unchanged against the laptop server —
-just start the laptop server on `:8080` and the wrappers' built-in proxies
+just start the laptop server on `:13636` and the wrappers' built-in proxies
 will spawn on `:8091`/`:8092` as usual.
 
 ## Thinking mode

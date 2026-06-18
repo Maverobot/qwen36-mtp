@@ -29,7 +29,7 @@ CUDA_LABEL="${CUDA_LABEL:-cuda-12.4.1}"   # conda nvidia channel label
 CUDA_ARCH="${CUDA_ARCH:-89}"               # 89 = Ada / RTX 4090; 86 = Ampere / 3090
 CTX_SIZE="${CTX_SIZE:-131072}"             # quality-first with safer 24 GB headroom
 PARALLEL="${PARALLEL:-2}"
-PORT="${PORT:-8080}"
+PORT="${PORT:-13636}"
 JOBS="$(nproc)"
 
 LLAMA_UPSTREAM_URL="${LLAMA_UPSTREAM_URL:-https://github.com/ggml-org/llama.cpp.git}"

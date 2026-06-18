@@ -9,7 +9,7 @@
 #   MODEL_PATH       Absolute path to the GGUF
 # Optional env (with defaults):
 #   CTX_SIZE         131072
-#   PORT             8080
+#   PORT             13636
 #   HOST             0.0.0.0
 #   ALIAS            qwen3.6-27b
 #   SLOT_CACHE_DIR   <empty = disabled on-disk slot save/restore>
@@ -28,7 +28,7 @@ set -e
 : "${MODEL_PATH:?MODEL_PATH env var is required}"
 
 CTX_SIZE="${CTX_SIZE:-131072}"
-PORT="${PORT:-8080}"
+PORT="${PORT:-13636}"
 HOST="${HOST:-0.0.0.0}"
 ALIAS="${ALIAS:-qwen3.6-27b}"
 CACHE_REUSE="${CACHE_REUSE:-256}"

@@ -5,7 +5,7 @@
 # merging proxy).
 set -e
 
-UPSTREAM="${LLAMA_CPP_BASE_URL:-http://127.0.0.1:8080}"
+UPSTREAM="${LLAMA_CPP_BASE_URL:-http://127.0.0.1:13636}"
 PROXY_PORT="${OMP_PROXY_PORT:-8093}"
 PROXY_BIN="$(dirname "$(dirname "$(readlink -f "$0")")")/scripts/merge-sys-proxy.py"
 
