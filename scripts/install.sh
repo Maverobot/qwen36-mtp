@@ -211,6 +211,8 @@ RestartSec=5
 WantedBy=default.target
 EOF
 log "Wrote systemd user unit: $SVC"
+rm -f "$HOME/.config/systemd/user/default.target.wants/qwen36.service"
+log "Left qwen36 disabled; start it manually with: systemctl --user start qwen36"
 
 # qwen36-multi.service is deprecated. Existing units continue to work through
 # scripts/run-multi.sh as a compatibility shim, but fresh installs should use
@@ -227,13 +229,12 @@ Binary:   $LLAMA_DIR/build/bin/llama-server
 Launcher: $LAUNCH   (edit $CONF for tuning, no need to touch this file)
 Endpoint: http://localhost:$PORT/v1   (OpenAI-compatible, model alias "qwen3.6-27b")
 
-One-shot:
+Manual systemd service:
+  systemctl --user daemon-reload
   systemctl --user start qwen36   # or: $LAUNCH
 
-As a systemd user service (auto-start on login):
-  systemctl --user daemon-reload
-  systemctl --user enable --now qwen36
-  # to keep running across logout: sudo loginctl enable-linger \$USER
+Autostart:
+  disabled by installer; do not run \`systemctl --user enable qwen36\` unless you want login startup.
 
 Parallel requests:
   # upstream MTP supports parallel slots; PARALLEL=$PARALLEL is configured.

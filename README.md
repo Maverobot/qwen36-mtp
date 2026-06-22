@@ -96,7 +96,7 @@ rm -f ~/.config/systemd/user/qwen36-multi.service
 systemctl --user stop qwen36 2>/dev/null || true
 ./scripts/install.sh
 systemctl --user daemon-reload
-systemctl --user restart qwen36
+systemctl --user start qwen36   # when needed
 ```
 
 Set `LLAMA_REF=<branch-or-tag>` if you want to pin a specific upstream revision.
@@ -154,10 +154,10 @@ Change ctx size or port? Edit `~/.config/qwen36-mtp/env` and restart.
 ## Run
 
 ```bash
-~/.config/systemd/user/qwen36.service is installed; just:
+# ~/.config/systemd/user/qwen36.service is installed disabled; start it when needed:
+rm -f ~/.config/systemd/user/default.target.wants/qwen36.service
 systemctl --user daemon-reload
-systemctl --user enable --now qwen36
-sudo loginctl enable-linger $USER     # keep running across logout
+systemctl --user start qwen36
 
 # manual one-shot:
 LLAMA_BIN=...llama-server MODEL_PATH=...gguf ./scripts/run.sh
@@ -187,8 +187,9 @@ Install the unit template once (idempotent):
 
 ```bash
 ln -sf "$PWD/scripts/systemd/qwen36.service" ~/.config/systemd/user/qwen36.service
+rm -f ~/.config/systemd/user/default.target.wants/qwen36.service
 systemctl --user daemon-reload
-systemctl --user enable --now qwen36
+systemctl --user start qwen36
 ```
 
 Tune slots by editing `PARALLEL` in `~/.config/qwen36-mtp/env` and restarting:
@@ -440,11 +441,9 @@ EnvironmentFile=%h/.config/qwen36-mtp/laptop.env
 ExecStart=%h/Dev/qwen36-mtp/scripts/run-laptop.sh
 Restart=on-failure
 
-[Install]
-WantedBy=default.target
 EOF
 systemctl --user daemon-reload
-systemctl --user enable --now qwen36-laptop
+systemctl --user start qwen36-laptop
 journalctl --user -fu qwen36-laptop
 ```
 
